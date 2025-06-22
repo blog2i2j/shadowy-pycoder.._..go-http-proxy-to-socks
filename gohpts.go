@@ -1,6 +1,7 @@
 package gohpts
 
 import (
+	"bufio"
 	"bytes"
 	"compress/gzip"
 	"context"
@@ -408,16 +409,22 @@ func (p *proxyapp) colorizeHTTP(req *http.Request, resp *http.Response, reqBodyS
 			sb.WriteString(fmt.Sprintf("Len: %d", resp.ContentLength))
 		}
 		if p.body && len(*reqBodySaved) > 0 {
-			sb.WriteString("\n")
-			sb.WriteString(fmt.Sprintf("%s ", p.colorizeTimestamp()))
-			sb.WriteString(fmt.Sprintf("%s ", colors.WrapBrackets(id.String())))
-			sb.WriteString(fmt.Sprintf("req_body: %s", reqBodySaved))
+			b := p.colorizeBody(reqBodySaved)
+			if b != "" {
+				sb.WriteString("\n")
+				sb.WriteString(fmt.Sprintf("%s ", p.colorizeTimestamp()))
+				sb.WriteString(fmt.Sprintf("%s ", colors.WrapBrackets(id.String())))
+				sb.WriteString(fmt.Sprintf("req_body: %s", b))
+			}
 		}
 		if p.body && len(*respBodySaved) > 0 {
-			sb.WriteString("\n")
-			sb.WriteString(fmt.Sprintf("%s ", p.colorizeTimestamp()))
-			sb.WriteString(fmt.Sprintf("%s ", colors.WrapBrackets(id.String())))
-			sb.WriteString(fmt.Sprintf("resp_body: %s", respBodySaved))
+			b := p.colorizeBody(respBodySaved)
+			if b != "" {
+				sb.WriteString("\n")
+				sb.WriteString(fmt.Sprintf("%s ", p.colorizeTimestamp()))
+				sb.WriteString(fmt.Sprintf("%s ", colors.WrapBrackets(id.String())))
+				sb.WriteString(fmt.Sprintf("resp_body: %s", b))
+			}
 		}
 	} else {
 		sb.WriteString(colors.BlueBg(fmt.Sprintf("%s ", colors.WrapBrackets(id.String()))).String())
@@ -437,45 +444,63 @@ func (p *proxyapp) colorizeHTTP(req *http.Request, resp *http.Response, reqBodyS
 			sb.WriteString(colors.BeigeBg(fmt.Sprintf("Len: %d", resp.ContentLength)).String())
 		}
 		if p.body && len(*reqBodySaved) > 0 {
-			sb.WriteString("\n")
-			sb.WriteString(fmt.Sprintf("%s ", p.colorizeTimestamp()))
-			sb.WriteString(colors.BlueBg(fmt.Sprintf("%s ", colors.WrapBrackets(id.String()))).String())
-			sb.WriteString(colors.GreenBg("req_body: ").String())
-			sb.WriteString(p.colorizeBody(reqBodySaved))
+			b := p.colorizeBody(reqBodySaved)
+			if b != "" {
+				sb.WriteString("\n")
+				sb.WriteString(fmt.Sprintf("%s ", p.colorizeTimestamp()))
+				sb.WriteString(colors.BlueBg(fmt.Sprintf("%s ", colors.WrapBrackets(id.String()))).String())
+				sb.WriteString(colors.GreenBg("req_body: ").String())
+				sb.WriteString(b)
+			}
 		}
 		if p.body && len(*respBodySaved) > 0 {
-			sb.WriteString("\n")
-			sb.WriteString(fmt.Sprintf("%s ", p.colorizeTimestamp()))
-			sb.WriteString(colors.BlueBg(fmt.Sprintf("%s ", colors.WrapBrackets(id.String()))).String())
-			sb.WriteString(colors.GreenBg("resp_body: ").String())
-			sb.WriteString(p.colorizeBody(respBodySaved))
+			b := p.colorizeBody(respBodySaved)
+			if b != "" {
+				sb.WriteString("\n")
+				sb.WriteString(fmt.Sprintf("%s ", p.colorizeTimestamp()))
+				sb.WriteString(colors.BlueBg(fmt.Sprintf("%s ", colors.WrapBrackets(id.String()))).String())
+				sb.WriteString(colors.GreenBg("resp_body: ").String())
+				sb.WriteString(b)
+			}
 		}
 	}
 	p.snifflogger.Log().Msg(sb.String())
 }
 
-func (p *proxyapp) colorizeBody(b *[]byte) string {
-	s := fmt.Sprintf("%s", *b)
-	if p.sniffnocolor || !p.body {
-		return s
-	}
-	result := ipPortPattern.ReplaceAllStringFunc(s, func(match string) string {
-		return colors.YellowBg(match).String()
-	})
-	result = domainPattern.ReplaceAllStringFunc(result, func(match string) string {
-		return colors.YellowBg(match).String()
-	})
+func (p *proxyapp) highlightPatterns(line string) (string, bool) {
+	matched := false
 
-	result = jwtPattern.ReplaceAllStringFunc(result, func(match string) string {
-		return colors.Magenta(match).String()
-	})
-	result = authPattern.ReplaceAllStringFunc(result, func(match string) string {
-		return colors.Magenta(match).String()
-	})
-	result = credsPattern.ReplaceAllStringFunc(result, func(match string) string {
-		return colors.GreenBg(match).String()
-	})
-	return result
+	// line, matched = p.replace(line, ipPortPattern, colors.YellowBg, matched)
+	// line, matched = p.replace(line, domainPattern, colors.YellowBg, matched)
+	line, matched = p.replace(line, jwtPattern, colors.Magenta, matched)
+	line, matched = p.replace(line, authPattern, colors.Magenta, matched)
+	line, matched = p.replace(line, credsPattern, colors.GreenBg, matched)
+
+	return line, matched
+}
+
+func (p *proxyapp) replace(line string, re *regexp.Regexp, color func(string) *colors.Color, matched bool) (string, bool) {
+	if re.MatchString(line) {
+		matched = true
+		if !p.sniffnocolor {
+			line = re.ReplaceAllStringFunc(line, func(s string) string {
+				return color(s).String()
+			})
+		}
+	}
+	return line, matched
+}
+
+func (p *proxyapp) colorizeBody(b *[]byte) string {
+	matches := make([]string, 0, 3)
+	scanner := bufio.NewScanner(bytes.NewReader(*b))
+	for scanner.Scan() {
+		line := scanner.Text()
+		if highlighted, ok := p.highlightPatterns(line); ok {
+			matches = append(matches, strings.Trim(highlighted, "\r\n\t "))
+		}
+	}
+	return strings.Join(matches, "\n")
 }
 
 func (p *proxyapp) colorizeTimestamp() string {
@@ -535,11 +560,11 @@ func (p *proxyapp) handleForward(w http.ResponseWriter, r *http.Request) {
 				respBodySaved, _ = io.ReadAll(io.LimitReader(resp.Body, maxBodySize))
 				resp.Body = io.NopCloser(io.MultiReader(bytes.NewReader(respBodySaved), resp.Body))
 			}
-		}
-		if resp.Header.Get("Content-Encoding") == "gzip" {
-			gzr, err := gzip.NewReader(bytes.NewReader(respBodySaved))
-			if err == nil {
-				respBodySaved, _ = io.ReadAll(gzr)
+			if resp.Header.Get("Content-Encoding") == "gzip" {
+				gzr, err := gzip.NewReader(bytes.NewReader(respBodySaved))
+				if err == nil {
+					respBodySaved, _ = io.ReadAll(gzr)
+				}
 			}
 		}
 		if p.json {
