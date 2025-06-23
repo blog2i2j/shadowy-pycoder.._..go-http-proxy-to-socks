@@ -187,7 +187,7 @@ func (ts *tproxyServer) handleConnection(srcConn net.Conn) {
 				ts.pa.tproxyMode, srcConn.LocalAddr(), srcConn.RemoteAddr(), dstConn.LocalAddr(), dstConn.RemoteAddr(), dst))
 		} else {
 			var sb strings.Builder
-			if ts.pa.sniffnocolor {
+			if ts.pa.nocolor {
 				sb.WriteString(id)
 				sb.WriteString(fmt.Sprintf(" Src: %s->%s -> Dst: %s->%s Orig: %s", srcConn.LocalAddr(), srcConn.RemoteAddr(), dstConn.LocalAddr(), dstConn.RemoteAddr(), dst))
 			} else {

@@ -7,6 +7,8 @@
 ![GitHub Release](https://img.shields.io/github/v/release/shadowy-pycoder/go-http-proxy-to-socks)
 ![GitHub Downloads (all assets, all releases)](https://img.shields.io/github/downloads/shadowy-pycoder/go-http-proxy-to-socks/total)
 
+![GoHPTS - Colors example](resources/sniffing_color.png)
+
 ## Table of contents
 
 - [Introduction](#introduction)
@@ -19,6 +21,8 @@
   - [redirect (via NAT and SO_ORIGINAL_DST)](#redirect-via-nat-and-so_original_dst)
   - [tproxy (via MANGLE and IP_TRANSPARENT)](#tproxy-via-mangle-and-ip_transparent)
 - [Traffic sniffing](#traffic-sniffing)
+  - [JSON format](#json-format)
+  - [Colored format](#colored-format)
 - [Links](#links)
 - [Contributing](#contributing)
 - [License](#license)
@@ -93,7 +97,7 @@ You can download the binary for your platform from [Releases](https://github.com
 Example:
 
 ```shell
-HPTS_RELEASE=v1.7.3; wget -v https://github.com/shadowy-pycoder/go-http-proxy-to-socks/releases/download/$HPTS_RELEASE/gohpts-$HPTS_RELEASE-linux-amd64.tar.gz -O gohpts && tar xvzf gohpts && mv -f gohpts-$HPTS_RELEASE-linux-amd64 gohpts && ./gohpts -h
+HPTS_RELEASE=v1.8.0; wget -v https://github.com/shadowy-pycoder/go-http-proxy-to-socks/releases/download/$HPTS_RELEASE/gohpts-$HPTS_RELEASE-linux-amd64.tar.gz -O gohpts && tar xvzf gohpts && mv -f gohpts-$HPTS_RELEASE-linux-amd64 gohpts && ./gohpts -h
 ```
 
 Alternatively, you can install it using `go install` command (requires Go [1.24](https://go.dev/doc/install) or later):
@@ -154,7 +158,7 @@ Options:
   -logfile string
         Log file path (Default: stdout)
   -nocolor
-        Disable colored output for logs in stdout (no effect if log file provided or -j flag specified)
+        Disable colored output for logs (no effect if -j flag specified)
   -s string
         Address of SOCKS5 proxy server (default "127.0.0.1:1080")
   -sniff
@@ -432,6 +436,8 @@ ip link del veth1
 
 `GoHPTS` proxy allows one to capture and monitor traffic that goes through the service. This procces is known as `traffic sniffing`, `packet sniffing` or just `sniffing`. In particular, proxy tries to identify whether it is a plain text (HTTP) or TLS traffic, and after identification is done, it parses request/response metadata and writes it to the file or console. In the case of `GoHTPS` proxy a parsed metadata looks like the following (TLS Handshake):
 
+### JSON format
+
 ```json
 [
   {
@@ -553,13 +559,35 @@ And HTTP request with curl:
 Usage as simple as specifying `-sniff` flag along with regular flags
 
 ```shell
-gohpts -d -t 8888 -M redirect -sniff
+gohpts -d -t 8888 -M redirect -sniff -j
 ```
 
 You can also specify a file to which write sniffed traffic:
 
 ```shell
-gohpts -d -sniff -snifflog ~/sniff.log
+gohpts -sniff -snifflog ~/sniff.log -j
+```
+
+### Colored format
+
+You can see the example of colored output in the picture at the very top. In this mode, `GoHPTS` tries to highlight import information such as TLS Handshake, HTTP metadata, something that looks line login/passwords or different types of auth and secret tokens. The output is limited comparing to JSON but way easier to read for humans.
+
+To run `GoHPTS` in this mode you use the following flags:
+
+```shell
+gohpts -sniff -body
+```
+
+You can combine sniffing with transparent mode:
+
+```shell
+./gohpts -T 8888 -M redirect -sniff -body
+```
+
+To disable colors add `-nocolor`:
+
+```shell
+gohpts -sniff -body -nocolor
 ```
 
 ## Links

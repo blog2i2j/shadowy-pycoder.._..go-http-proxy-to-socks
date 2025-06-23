@@ -61,7 +61,7 @@ func root(args []string) error {
 	flags.BoolVar(&conf.Json, "j", false, "Show logs in JSON format")
 	flags.BoolVar(&conf.Sniff, "sniff", false, "Enable traffic sniffing for HTTP and TLS")
 	flags.StringVar(&conf.SniffLogFile, "snifflog", "", "Sniffed traffic log file path (Default: the same as -logfile)")
-	flags.BoolVar(&conf.NoColor, "nocolor", false, "Disable colored output for logs in stdout (no effect if log file provided or -j flag specified)")
+	flags.BoolVar(&conf.NoColor, "nocolor", false, "Disable colored output for logs (no effect if -j flag specified)")
 	flags.BoolVar(&conf.Body, "body", false, "Collect request and response body for HTTP sniffing")
 	flags.BoolFunc("v", "print version", func(flagValue string) error {
 		fmt.Printf("%s (built for %s %s with %s)\n", gohpts.Version, runtime.GOOS, runtime.GOARCH, runtime.Version())
@@ -84,7 +84,7 @@ func root(args []string) error {
 	}
 	if seen["t"] {
 		if !seen["M"] {
-			return fmt.Errorf("Transparent proxy mode is not provided: -M flag")
+			return fmt.Errorf("transparent proxy mode is not provided: -M flag")
 		}
 	}
 	if seen["T"] {
@@ -94,12 +94,12 @@ func root(args []string) error {
 			}
 		}
 		if !seen["M"] {
-			return fmt.Errorf("Transparent proxy mode is not provided: -M flag")
+			return fmt.Errorf("transparent proxy mode is not provided: -M flag")
 		}
 	}
 	if seen["M"] {
 		if !seen["t"] && !seen["T"] {
-			return fmt.Errorf("Transparent proxy mode requires -t or -T flag")
+			return fmt.Errorf("transparent proxy mode requires -t or -T flag")
 		}
 	}
 	if seen["f"] {

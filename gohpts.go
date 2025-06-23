@@ -115,7 +115,6 @@ type proxyapp struct {
 	rrIndexReset   uint32
 	sniff          bool
 	nocolor        bool
-	sniffnocolor   bool
 	body           bool
 	json           bool
 
@@ -150,7 +149,7 @@ func randColor() func(string) *colors.Color {
 
 func (p *proxyapp) getId() string {
 	id := uuid.New()
-	if p.sniffnocolor {
+	if p.nocolor {
 		return fmt.Sprintf("%s", colors.WrapBrackets(id.String()))
 	}
 	return randColor()(fmt.Sprintf("%s", colors.WrapBrackets(id.String()))).String()
@@ -182,7 +181,7 @@ func (p *proxyapp) colorizeHTTP(req *http.Request, resp *http.Response, reqBodyS
 	if ts {
 		sb.WriteString(fmt.Sprintf("%s ", p.colorizeTimestamp()))
 	}
-	if p.sniffnocolor {
+	if p.nocolor {
 		sb.WriteString(id)
 		sb.WriteString(fmt.Sprintf(" %s %s %s ", req.Method, req.URL, req.Proto))
 		if req.UserAgent() != "" {
@@ -237,7 +236,7 @@ func (p *proxyapp) colorizeHTTP(req *http.Request, resp *http.Response, reqBodyS
 				sb.WriteString("\n")
 				sb.WriteString(fmt.Sprintf("%s ", p.colorizeTimestamp()))
 				sb.WriteString(id)
-				sb.WriteString(colors.GreenBg(" req_body: ").String())
+				sb.WriteString(colors.RedBgDark(" req_body: ").String())
 				sb.WriteString(b)
 			}
 		}
@@ -247,7 +246,7 @@ func (p *proxyapp) colorizeHTTP(req *http.Request, resp *http.Response, reqBodyS
 				sb.WriteString("\n")
 				sb.WriteString(fmt.Sprintf("%s ", p.colorizeTimestamp()))
 				sb.WriteString(id)
-				sb.WriteString(colors.GreenBg(" resp_body: ").String())
+				sb.WriteString(colors.RedBgDark(" resp_body: ").String())
 				sb.WriteString(b)
 			}
 		}
@@ -257,10 +256,10 @@ func (p *proxyapp) colorizeHTTP(req *http.Request, resp *http.Response, reqBodyS
 
 func (p *proxyapp) colorizeTLS(req *layers.TLSClientHello, resp *layers.TLSServerHello, id string) string {
 	var sb strings.Builder
-	if p.sniffnocolor {
+	if p.nocolor {
 		sb.WriteString(fmt.Sprintf("%s ", p.colorizeTimestamp()))
 		sb.WriteString(id)
-		sb.WriteString(fmt.Sprintf(" %s:", req.TypeDesc))
+		sb.WriteString(fmt.Sprintf(" %s ", req.TypeDesc))
 		if req.Length > 0 {
 			sb.WriteString(fmt.Sprintf(" Len: %d", req.Length))
 		}
@@ -277,7 +276,7 @@ func (p *proxyapp) colorizeTLS(req *layers.TLSClientHello, resp *layers.TLSServe
 			sb.WriteString(fmt.Sprintf(" ALPN: %v", req.ALPN))
 		}
 		sb.WriteString(" -> ")
-		sb.WriteString(fmt.Sprintf("%s:", resp.TypeDesc))
+		sb.WriteString(fmt.Sprintf("%s ", resp.TypeDesc))
 		if resp.Length > 0 {
 			sb.WriteString(fmt.Sprintf(" Len: %d", resp.Length))
 		}
@@ -293,7 +292,7 @@ func (p *proxyapp) colorizeTLS(req *layers.TLSClientHello, resp *layers.TLSServe
 	} else {
 		sb.WriteString(fmt.Sprintf("%s ", p.colorizeTimestamp()))
 		sb.WriteString(id)
-		sb.WriteString(colors.Magenta(fmt.Sprintf(" %s:", req.TypeDesc)).Bold())
+		sb.WriteString(colors.Magenta(fmt.Sprintf(" %s ", req.TypeDesc)).Bold())
 		if req.Length > 0 {
 			sb.WriteString(colors.BeigeBg(fmt.Sprintf(" Len: %d", req.Length)).String())
 		}
@@ -310,7 +309,7 @@ func (p *proxyapp) colorizeTLS(req *layers.TLSClientHello, resp *layers.TLSServe
 			sb.WriteString(colors.BlueBg(fmt.Sprintf(" ALPN: %v", req.ALPN)).String())
 		}
 		sb.WriteString(colors.MagentaBg(" -> ").String())
-		sb.WriteString(colors.LightBlue(fmt.Sprintf("%s:", resp.TypeDesc)).Bold())
+		sb.WriteString(colors.LightBlue(fmt.Sprintf("%s ", resp.TypeDesc)).Bold())
 		if resp.Length > 0 {
 			sb.WriteString(colors.BeigeBg(fmt.Sprintf(" Len: %d", resp.Length)).String())
 		}
@@ -343,7 +342,7 @@ func (p *proxyapp) highlightPatterns(line string) (string, bool) {
 func (p *proxyapp) replace(line string, re *regexp.Regexp, color func(string) *colors.Color, matched bool) (string, bool) {
 	if re.MatchString(line) {
 		matched = true
-		if !p.sniffnocolor {
+		if !p.nocolor {
 			line = re.ReplaceAllStringFunc(line, func(s string) string {
 				return color(s).String()
 			})
@@ -366,10 +365,10 @@ func (p *proxyapp) colorizeBody(b *[]byte) string {
 
 func (p *proxyapp) colorizeTimestamp() string {
 	ts := time.Now()
-	if p.sniffnocolor {
+	if p.nocolor {
 		return colors.WrapBrackets(ts.Format(time.TimeOnly))
 	}
-	return colors.GrayBg(colors.WrapBrackets(ts.Format(time.TimeOnly))).String()
+	return colors.Gray(colors.WrapBrackets(ts.Format(time.TimeOnly))).String()
 }
 
 func (p *proxyapp) colorizeTunnel(req, resp layers.Layer, sniffheader *[]string, id string) error {
@@ -936,13 +935,13 @@ func (p *proxyapp) handleTunnel(w http.ResponseWriter, r *http.Request) {
 			}
 		} else {
 			var sb strings.Builder
-			if p.sniffnocolor {
+			if p.nocolor {
 				sb.WriteString(id)
 				sb.WriteString(fmt.Sprintf(" Src: %s->%s -> Dst: %s->%s", srcConn.LocalAddr(), srcConn.RemoteAddr(), dstConn.LocalAddr(), dstConn.RemoteAddr()))
 				sb.WriteString("\n")
 				sb.WriteString(fmt.Sprintf("%s ", p.colorizeTimestamp()))
 				sb.WriteString(id)
-				sb.WriteString(fmt.Sprintf(" %s %s %s ", r.Method, r.URL, r.Proto))
+				sb.WriteString(fmt.Sprintf(" %s %s %s ", r.Method, r.Host, r.Proto))
 			} else {
 				sb.WriteString(id)
 				sb.WriteString(colors.Green(fmt.Sprintf(" Src: %s->%s", srcConn.LocalAddr(), srcConn.RemoteAddr())).String())
@@ -952,7 +951,7 @@ func (p *proxyapp) handleTunnel(w http.ResponseWriter, r *http.Request) {
 				sb.WriteString(fmt.Sprintf("%s ", p.colorizeTimestamp()))
 				sb.WriteString(id)
 				sb.WriteString(colors.Gray(fmt.Sprintf(" %s ", r.Method)).String())
-				sb.WriteString(colors.YellowBg(fmt.Sprintf("%s ", r.URL)).String())
+				sb.WriteString(colors.YellowBg(fmt.Sprintf("%s ", r.Host)).String())
 				sb.WriteString(colors.BlueBg(fmt.Sprintf("%s ", r.Proto)).String())
 			}
 			sniffheader = append(sniffheader, sb.String())
@@ -988,7 +987,7 @@ func (p *proxyapp) sniffreporter(wg *sync.WaitGroup, sniffheader *[]string, reqC
 			respQueue = respQueue[1:]
 
 			err := p.colorizeTunnel(req, resp, sniffheader, id)
-			if err == nil {
+			if err == nil && len(*sniffheader) > sniffheaderlen {
 				if p.json {
 					p.snifflogger.Log().Msg(fmt.Sprintf("[%s]", strings.Join(*sniffheader, ",")))
 				} else {
@@ -1304,8 +1303,7 @@ func New(conf *Config) *proxyapp {
 	} else {
 		snifflog = logfile
 	}
-	p.nocolor = conf.Json || (conf.NoColor && logfile == os.Stdout)
-	p.sniffnocolor = conf.Json || (conf.NoColor && logfile == os.Stdout)
+	p.nocolor = conf.Json || conf.NoColor
 	if conf.Json {
 		log.SetFlags(0)
 		jsonWriter := jsonLogWriter{file: logfile}
@@ -1361,13 +1359,13 @@ func New(conf *Config) *proxyapp {
 
 		}
 		logger = zerolog.New(output).With().Timestamp().Logger()
-		sniffoutput := zerolog.ConsoleWriter{Out: snifflog, TimeFormat: time.RFC3339, NoColor: p.sniffnocolor, PartsExclude: []string{"level"}}
+		sniffoutput := zerolog.ConsoleWriter{Out: snifflog, TimeFormat: time.RFC3339, NoColor: p.nocolor, PartsExclude: []string{"level"}}
 		sniffoutput.FormatTimestamp = func(i any) string {
 			ts, _ := time.Parse(time.RFC3339, i.(string))
 			if p.nocolor {
 				return colors.WrapBrackets(ts.Format(time.TimeOnly))
 			}
-			return colors.GrayBg(colors.WrapBrackets(ts.Format(time.TimeOnly))).String()
+			return colors.Gray(colors.WrapBrackets(ts.Format(time.TimeOnly))).String()
 		}
 		sniffoutput.FormatMessage = func(i any) string {
 			if i == nil || i == "" {
