@@ -9,11 +9,14 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
 	"unsafe"
 
+	"github.com/shadowy-pycoder/colors"
+	"github.com/shadowy-pycoder/mshark/layers"
 	"golang.org/x/net/proxy"
 	"golang.org/x/sys/unix"
 )
@@ -169,18 +172,34 @@ func (ts *tproxyServer) handleConnection(srcConn net.Conn) {
 
 	ts.pa.logger.Debug().Msgf("[tproxy] src: %s - dst: %s", srcConnStr, dstConnStr)
 
-	reqChan := make(chan []byte)
-	respChan := make(chan []byte)
+	reqChan := make(chan layers.Layer)
+	respChan := make(chan layers.Layer)
 	var wg sync.WaitGroup
 	wg.Add(2)
 	go ts.pa.transfer(&wg, dstConn, srcConn, dstConnStr, srcConnStr, reqChan)
 	go ts.pa.transfer(&wg, srcConn, dstConn, srcConnStr, dstConnStr, respChan)
 	if ts.pa.sniff {
 		wg.Add(1)
-		sniffheader := make([]string, 0, 3)
-		sniffheader = append(sniffheader, fmt.Sprintf("{\"connection\":{\"tproxy_mode\":%q,\"src_local\":%q,\"src_remote\":%q,\"dst_local\":%q,\"dst_remote\":%q,\"original_dst\":%q}}",
-			ts.pa.tproxyMode, srcConn.LocalAddr(), srcConn.RemoteAddr(), dstConn.LocalAddr(), dstConn.RemoteAddr(), dst))
-		go ts.pa.sniffreporter(&wg, &sniffheader, reqChan, respChan)
+		sniffheader := make([]string, 0, 6)
+		id := ts.pa.getId()
+		if ts.pa.json {
+			sniffheader = append(sniffheader, fmt.Sprintf("{\"connection\":{\"tproxy_mode\":%s,\"src_local\":%s,\"src_remote\":%s,\"dst_local\":%s,\"dst_remote\":%s,\"original_dst\":%s}}",
+				ts.pa.tproxyMode, srcConn.LocalAddr(), srcConn.RemoteAddr(), dstConn.LocalAddr(), dstConn.RemoteAddr(), dst))
+		} else {
+			var sb strings.Builder
+			if ts.pa.nocolor {
+				sb.WriteString(id)
+				sb.WriteString(fmt.Sprintf(" Src: %s->%s -> Dst: %s->%s Orig: %s", srcConn.LocalAddr(), srcConn.RemoteAddr(), dstConn.LocalAddr(), dstConn.RemoteAddr(), dst))
+			} else {
+				sb.WriteString(id)
+				sb.WriteString(colors.Green(fmt.Sprintf(" Src: %s->%s", srcConn.LocalAddr(), srcConn.RemoteAddr())).String())
+				sb.WriteString(colors.Magenta(" -> ").String())
+				sb.WriteString(colors.Blue(fmt.Sprintf("Dst: %s->%s ", dstConn.LocalAddr(), dstConn.RemoteAddr())).String())
+				sb.WriteString(colors.BeigeBg(fmt.Sprintf("Orig Dst: %s", dst)).String())
+			}
+			sniffheader = append(sniffheader, sb.String())
+		}
+		go ts.pa.sniffreporter(&wg, &sniffheader, reqChan, respChan, id)
 	}
 	wg.Wait()
 }

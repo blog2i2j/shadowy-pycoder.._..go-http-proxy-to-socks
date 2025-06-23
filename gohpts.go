@@ -1,6 +1,9 @@
 package gohpts
 
 import (
+	"bufio"
+	"bytes"
+	"compress/gzip"
 	"context"
 	"crypto/sha256"
 	"crypto/subtle"
@@ -16,6 +19,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"regexp"
 	"runtime"
 	"slices"
 	"strconv"
@@ -25,7 +29,9 @@ import (
 	"time"
 
 	"github.com/goccy/go-yaml"
+	"github.com/google/uuid"
 	"github.com/rs/zerolog"
+	"github.com/shadowy-pycoder/colors"
 	"github.com/shadowy-pycoder/mshark/layers"
 	"golang.org/x/net/proxy"
 )
@@ -39,12 +45,18 @@ const (
 	availProxyUpdateInterval time.Duration = 30 * time.Second
 	kbSize                   int64         = 1000
 	rrIndexMax               uint32        = 1_000_000
+	maxBodySize              int64         = 2 << 15
 )
 
 var (
 	supportedChainTypes  = []string{"strict", "dynamic", "random", "round_robin"}
 	SupportedTProxyModes = []string{"redirect", "tproxy"}
 	errInvalidWrite      = errors.New("invalid write result")
+	ipPortPattern        = regexp.MustCompile(`\b(?:\d{1,3}\.){3}\d{1,3}(?::(6553[0-5]|655[0-2]\d|65[0-4]\d{2}|6[0-4]\d{3}|[1-5]?\d{1,4}))?\b`)
+	domainPattern        = regexp.MustCompile(`\b(?:[a-zA-Z0-9-]{1,63}\.)+(?:com|net|org|io|co|uk|ru|de|edu|gov|info|biz|dev|app|ai)(?::(6553[0-5]|655[0-2]\d|65[0-4]\d{2}|6[0-4]\d{3}|[1-5]?\d{1,4}))?\b`)
+	jwtPattern           = regexp.MustCompile(`\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b`)
+	authPattern          = regexp.MustCompile(`(?i)(?:"|')?(authorization|auth[_-]?token|access[_-]?token|api[_-]?key|secret|token)(?:"|')?\s*[:=]\s*(?:"|')?([^\s"'&]+)`)
+	credsPattern         = regexp.MustCompile(`(?i)(?:"|')?(username|user|login|email|password|pass|pwd)(?:"|')?\s*[:=]\s*(?:"|')?([^\s"'&]+)`)
 )
 
 // Hop-by-hop headers
@@ -59,6 +71,389 @@ var hopHeaders = []string{
 	"Trailer",
 	"Transfer-Encoding",
 	"Upgrade",
+}
+
+type Config struct {
+	AddrHTTP       string
+	AddrSOCKS      string
+	User           string
+	Pass           string
+	ServerUser     string
+	ServerPass     string
+	CertFile       string
+	KeyFile        string
+	ServerConfPath string
+	TProxy         string
+	TProxyOnly     string
+	TProxyMode     string
+	LogFilePath    string
+	Debug          bool
+	Json           bool
+	Sniff          bool
+	SniffLogFile   string
+	NoColor        bool
+	Body           bool
+}
+
+type proxyapp struct {
+	httpServer     *http.Server
+	sockClient     *http.Client
+	httpClient     *http.Client
+	sockDialer     proxy.Dialer
+	logger         *zerolog.Logger
+	snifflogger    *zerolog.Logger
+	certFile       string
+	keyFile        string
+	httpServerAddr string
+	tproxyAddr     string
+	tproxyMode     string
+	user           string
+	pass           string
+	proxychain     chain
+	proxylist      []proxyEntry
+	rrIndex        uint32
+	rrIndexReset   uint32
+	sniff          bool
+	nocolor        bool
+	body           bool
+	json           bool
+
+	mu             sync.RWMutex
+	availProxyList []proxyEntry
+}
+
+var rColors = []func(string) *colors.Color{
+	colors.Beige,
+	colors.Blue,
+	colors.Gray,
+	colors.Green,
+	colors.LightBlue,
+	colors.Magenta,
+	colors.Red,
+	colors.Yellow,
+	colors.BeigeBg,
+	colors.BlueBg,
+	colors.GrayBg,
+	colors.GreenBg,
+	colors.LightBlueBg,
+	colors.MagentaBg,
+	colors.RedBgDark,
+	colors.YellowBg,
+}
+
+func randColor() func(string) *colors.Color {
+	r := rand.New(rand.NewSource(time.Now().UnixNano()))
+	randIndex := r.Intn(len(rColors))
+	return rColors[randIndex]
+}
+
+func (p *proxyapp) getId() string {
+	id := uuid.New()
+	if p.nocolor {
+		return fmt.Sprintf("%s", colors.WrapBrackets(id.String()))
+	}
+	return randColor()(fmt.Sprintf("%s", colors.WrapBrackets(id.String()))).String()
+}
+
+func (p *proxyapp) colorizeStatus(code int, status string, bg bool) string {
+	if bg {
+		if code < 300 {
+			status = colors.GreenBg(status).String()
+		} else if code < 400 {
+			status = colors.YellowBg(status).String()
+		} else {
+			status = colors.RedBgDark(status).String()
+		}
+	} else {
+		if code < 300 {
+			status = colors.Green(status).String()
+		} else if code < 400 {
+			status = colors.Yellow(status).String()
+		} else {
+			status = colors.Red(status).String()
+		}
+	}
+	return status
+}
+
+func (p *proxyapp) colorizeHTTP(req *http.Request, resp *http.Response, reqBodySaved, respBodySaved *[]byte, id string, ts bool) string {
+	var sb strings.Builder
+	if ts {
+		sb.WriteString(fmt.Sprintf("%s ", p.colorizeTimestamp()))
+	}
+	if p.nocolor {
+		sb.WriteString(id)
+		sb.WriteString(fmt.Sprintf(" %s %s %s ", req.Method, req.URL, req.Proto))
+		if req.UserAgent() != "" {
+			sb.WriteString(fmt.Sprintf("%s", colors.WrapBrackets(req.UserAgent())))
+		}
+		if req.ContentLength > 0 {
+			sb.WriteString(fmt.Sprintf(" Len: %d", req.ContentLength))
+		}
+		sb.WriteString(" -> ")
+		sb.WriteString(fmt.Sprintf("%s %s ", resp.Proto, resp.Status))
+		if resp.ContentLength > 0 {
+			sb.WriteString(fmt.Sprintf("Len: %d", resp.ContentLength))
+		}
+		if p.body && len(*reqBodySaved) > 0 {
+			b := p.colorizeBody(reqBodySaved)
+			if b != "" {
+				sb.WriteString("\n")
+				sb.WriteString(fmt.Sprintf("%s ", p.colorizeTimestamp()))
+				sb.WriteString(id)
+				sb.WriteString(fmt.Sprintf(" req_body: %s", b))
+			}
+		}
+		if p.body && len(*respBodySaved) > 0 {
+			b := p.colorizeBody(respBodySaved)
+			if b != "" {
+				sb.WriteString("\n")
+				sb.WriteString(fmt.Sprintf("%s ", p.colorizeTimestamp()))
+				sb.WriteString(id)
+				sb.WriteString(fmt.Sprintf(" resp_body: %s", b))
+			}
+		}
+	} else {
+		sb.WriteString(id)
+		sb.WriteString(colors.Gray(fmt.Sprintf(" %s ", req.Method)).String())
+		sb.WriteString(colors.YellowBg(fmt.Sprintf("%s ", req.URL)).String())
+		sb.WriteString(colors.BlueBg(fmt.Sprintf("%s ", req.Proto)).String())
+		if req.UserAgent() != "" {
+			sb.WriteString(colors.Gray(fmt.Sprintf("%s", colors.WrapBrackets(req.UserAgent()))).String())
+		}
+		if req.ContentLength > 0 {
+			sb.WriteString(colors.BeigeBg(fmt.Sprintf(" Len: %d", req.ContentLength)).String())
+		}
+		sb.WriteString(colors.MagentaBg(" -> ").String())
+		sb.WriteString(colors.BlueBg(fmt.Sprintf("%s ", resp.Proto)).String())
+		sb.WriteString(p.colorizeStatus(resp.StatusCode, fmt.Sprintf("%s ", resp.Status), true))
+		if resp.ContentLength > 0 {
+			sb.WriteString(colors.BeigeBg(fmt.Sprintf("Len: %d", resp.ContentLength)).String())
+		}
+		if p.body && len(*reqBodySaved) > 0 {
+			b := p.colorizeBody(reqBodySaved)
+			if b != "" {
+				sb.WriteString("\n")
+				sb.WriteString(fmt.Sprintf("%s ", p.colorizeTimestamp()))
+				sb.WriteString(id)
+				sb.WriteString(colors.RedBgDark(" req_body: ").String())
+				sb.WriteString(b)
+			}
+		}
+		if p.body && len(*respBodySaved) > 0 {
+			b := p.colorizeBody(respBodySaved)
+			if b != "" {
+				sb.WriteString("\n")
+				sb.WriteString(fmt.Sprintf("%s ", p.colorizeTimestamp()))
+				sb.WriteString(id)
+				sb.WriteString(colors.RedBgDark(" resp_body: ").String())
+				sb.WriteString(b)
+			}
+		}
+	}
+	return sb.String()
+}
+
+func (p *proxyapp) colorizeTLS(req *layers.TLSClientHello, resp *layers.TLSServerHello, id string) string {
+	var sb strings.Builder
+	if p.nocolor {
+		sb.WriteString(fmt.Sprintf("%s ", p.colorizeTimestamp()))
+		sb.WriteString(id)
+		sb.WriteString(fmt.Sprintf(" %s ", req.TypeDesc))
+		if req.Length > 0 {
+			sb.WriteString(fmt.Sprintf(" Len: %d", req.Length))
+		}
+		if req.ServerName != nil && req.ServerName.SNName != "" {
+			sb.WriteString(fmt.Sprintf(" SNI: %s", req.ServerName.SNName))
+		}
+		if req.Version != nil && req.Version.Desc != "" {
+			sb.WriteString(fmt.Sprintf(" Ver: %s", req.Version.Desc))
+		}
+		if req.ALPN != nil {
+			sb.WriteString(fmt.Sprintf(" ALPN: %v", req.ALPN))
+		}
+		sb.WriteString(" -> ")
+		sb.WriteString("\n")
+		sb.WriteString(fmt.Sprintf("%s ", p.colorizeTimestamp()))
+		sb.WriteString(id)
+		sb.WriteString(fmt.Sprintf(" %s ", resp.TypeDesc))
+		if resp.Length > 0 {
+			sb.WriteString(fmt.Sprintf(" Len: %d", resp.Length))
+		}
+		if resp.SessionID != "" {
+			sb.WriteString(fmt.Sprintf(" SID: %s", resp.SessionID))
+		}
+		if resp.CipherSuite != nil && resp.CipherSuite.Desc != "" {
+			sb.WriteString(fmt.Sprintf(" CS: %s", resp.CipherSuite.Desc))
+		}
+		if resp.SupportedVersion != nil && resp.SupportedVersion.Desc != "" {
+			sb.WriteString(fmt.Sprintf(" Ver: %s", resp.SupportedVersion.Desc))
+		}
+		if resp.ExtensionLength > 0 {
+			sb.WriteString(fmt.Sprintf(" ExtLen: %d", resp.ExtensionLength))
+		}
+	} else {
+		sb.WriteString(fmt.Sprintf("%s ", p.colorizeTimestamp()))
+		sb.WriteString(id)
+		sb.WriteString(colors.Magenta(fmt.Sprintf(" %s ", req.TypeDesc)).Bold())
+		if req.Length > 0 {
+			sb.WriteString(colors.BeigeBg(fmt.Sprintf(" Len: %d", req.Length)).String())
+		}
+		if req.ServerName != nil && req.ServerName.SNName != "" {
+			sb.WriteString(colors.YellowBg(fmt.Sprintf(" SNI: %s", req.ServerName.SNName)).String())
+		}
+		if req.Version != nil && req.Version.Desc != "" {
+			sb.WriteString(colors.GreenBg(fmt.Sprintf(" Ver: %s", req.Version.Desc)).String())
+		}
+		if req.ALPN != nil {
+			sb.WriteString(colors.BlueBg(fmt.Sprintf(" ALPN: %v", req.ALPN)).String())
+		}
+		sb.WriteString(colors.MagentaBg(" -> ").String())
+		sb.WriteString("\n")
+		sb.WriteString(fmt.Sprintf("%s ", p.colorizeTimestamp()))
+		sb.WriteString(id)
+		sb.WriteString(colors.LightBlue(fmt.Sprintf(" %s ", resp.TypeDesc)).Bold())
+		if resp.Length > 0 {
+			sb.WriteString(colors.BeigeBg(fmt.Sprintf(" Len: %d", resp.Length)).String())
+		}
+		if resp.SessionID != "" {
+			sb.WriteString(colors.Gray(fmt.Sprintf(" SID: %s", resp.SessionID)).String())
+		}
+		if resp.CipherSuite != nil && resp.CipherSuite.Desc != "" {
+			sb.WriteString(colors.Yellow(fmt.Sprintf(" CS: %s", resp.CipherSuite.Desc)).Bold())
+		}
+		if resp.SupportedVersion != nil && resp.SupportedVersion.Desc != "" {
+			sb.WriteString(colors.GreenBg(fmt.Sprintf(" Ver: %s", resp.SupportedVersion.Desc)).String())
+		}
+		if resp.ExtensionLength > 0 {
+			sb.WriteString(colors.BeigeBg(fmt.Sprintf(" ExtLen: %d", resp.ExtensionLength)).String())
+		}
+	}
+	return sb.String()
+}
+
+func (p *proxyapp) highlightPatterns(line string) (string, bool) {
+	matched := false
+
+	// TODO: make this configurable
+	// line, matched = p.replace(line, ipPortPattern, colors.YellowBg, matched)
+	// line, matched = p.replace(line, domainPattern, colors.YellowBg, matched)
+	line, matched = p.replace(line, jwtPattern, colors.Magenta, matched)
+	line, matched = p.replace(line, authPattern, colors.Magenta, matched)
+	line, matched = p.replace(line, credsPattern, colors.GreenBg, matched)
+
+	return line, matched
+}
+
+func (p *proxyapp) replace(line string, re *regexp.Regexp, color func(string) *colors.Color, matched bool) (string, bool) {
+	if re.MatchString(line) {
+		matched = true
+		if !p.nocolor {
+			line = re.ReplaceAllStringFunc(line, func(s string) string {
+				return color(s).String()
+			})
+		}
+	}
+	return line, matched
+}
+
+func (p *proxyapp) colorizeBody(b *[]byte) string {
+	matches := make([]string, 0, 3)
+	scanner := bufio.NewScanner(bytes.NewReader(*b))
+	for scanner.Scan() {
+		line := scanner.Text()
+		if highlighted, ok := p.highlightPatterns(line); ok {
+			matches = append(matches, strings.Trim(highlighted, "\r\n\t "))
+		}
+	}
+	return strings.Join(matches, "\n")
+}
+
+func (p *proxyapp) colorizeTimestamp() string {
+	ts := time.Now()
+	if p.nocolor {
+		return colors.WrapBrackets(ts.Format(time.TimeOnly))
+	}
+	return colors.Gray(colors.WrapBrackets(ts.Format(time.TimeOnly))).String()
+}
+
+func (p *proxyapp) colorizeTunnel(req, resp layers.Layer, sniffheader *[]string, id string) error {
+	switch reqt := req.(type) {
+	case *layers.HTTPMessage:
+		var reqBodySaved, respBodySaved []byte
+		rest := resp.(*layers.HTTPMessage)
+		if p.body {
+			reqBodySaved, _ = io.ReadAll(reqt.Request.Body)
+			respBodySaved, _ = io.ReadAll(rest.Response.Body)
+			reqBodySaved = bytes.Trim(reqBodySaved, "\r\n\t ")
+			respBodySaved = bytes.Trim(respBodySaved, "\r\n\t ")
+		}
+		if p.json {
+			j1, err := json.Marshal(reqt)
+			if err != nil {
+				return err
+			}
+			j2, err := json.Marshal(rest)
+			if err != nil {
+				return err
+			}
+			*sniffheader = append(*sniffheader, string(j1), string(j2))
+			if p.body && len(reqBodySaved) > 0 {
+				*sniffheader = append(*sniffheader, fmt.Sprintf("{\"req_body\":%s}", reqBodySaved))
+			}
+			if p.body && len(respBodySaved) > 0 {
+				*sniffheader = append(*sniffheader, fmt.Sprintf("{\"resp_body\":%s}", respBodySaved))
+			}
+		} else {
+			*sniffheader = append(*sniffheader, p.colorizeHTTP(reqt.Request, rest.Response, &reqBodySaved, &respBodySaved, id, true))
+		}
+	case *layers.TLSMessage:
+		var chs *layers.TLSClientHello
+		var shs *layers.TLSServerHello
+		if len(reqt.Records) > 0 {
+			hsrec := reqt.Records[0]
+			if hsrec.ContentType == layers.HandshakeTLSVal { // TODO: add more cases, parse all records
+				switch parser := layers.HSTLSParserByType(hsrec.Data[0]).(type) {
+				case *layers.TLSClientHello:
+					err := parser.ParseHS(hsrec.Data)
+					if err != nil {
+						return err
+					}
+					chs = parser
+				}
+			}
+		}
+		rest := resp.(*layers.TLSMessage)
+		if len(rest.Records) > 0 {
+			hsrec := rest.Records[0]
+			if hsrec.ContentType == layers.HandshakeTLSVal {
+				switch parser := layers.HSTLSParserByType(hsrec.Data[0]).(type) {
+				case *layers.TLSServerHello:
+					err := parser.ParseHS(hsrec.Data)
+					if err != nil {
+						return err
+					}
+					shs = parser
+				}
+			}
+		}
+		if chs != nil && shs != nil {
+			if p.json {
+				j1, err := json.Marshal(chs)
+				if err != nil {
+					return err
+				}
+				j2, err := json.Marshal(shs)
+				if err != nil {
+					return err
+				}
+				*sniffheader = append(*sniffheader, string(j1), string(j2))
+			} else {
+				*sniffheader = append(*sniffheader, p.colorizeTLS(chs, shs, id))
+			}
+		}
+	}
+	return nil
 }
 
 func copyHeader(dst, src http.Header) {
@@ -107,30 +502,6 @@ func isLocalAddress(addr string) bool {
 	return strings.HasSuffix(host, ".local") || host == "localhost"
 }
 
-type proxyapp struct {
-	httpServer     *http.Server
-	sockClient     *http.Client
-	httpClient     *http.Client
-	sockDialer     proxy.Dialer
-	logger         *zerolog.Logger
-	snifflogger    *zerolog.Logger
-	certFile       string
-	keyFile        string
-	httpServerAddr string
-	tproxyAddr     string
-	tproxyMode     string
-	user           string
-	pass           string
-	proxychain     chain
-	proxylist      []proxyEntry
-	rrIndex        uint32
-	rrIndexReset   uint32
-	sniff          bool
-
-	mu             sync.RWMutex
-	availProxyList []proxyEntry
-}
-
 func (p *proxyapp) printProxyChain(pc []proxyEntry) string {
 	var sb strings.Builder
 	sb.WriteString("client -> ")
@@ -163,6 +534,12 @@ func (p *proxyapp) updateSocksList() {
 	var err error
 	failed := 0
 	chainType := p.proxychain.Type
+	var ctl string
+	if p.nocolor {
+		ctl = colors.WrapBrackets(chainType)
+	} else {
+		ctl = colors.WrapBrackets(colors.LightBlueBg(chainType).String())
+	}
 	for _, pr := range p.proxylist {
 		auth := proxy.Auth{
 			User:     pr.Username,
@@ -170,7 +547,7 @@ func (p *proxyapp) updateSocksList() {
 		}
 		dialer, err = proxy.SOCKS5("tcp", pr.Address, &auth, base)
 		if err != nil {
-			p.logger.Error().Err(err).Msgf("[%s] Unable to create SOCKS5 dialer %s", chainType, pr.Address)
+			p.logger.Error().Err(err).Msgf("%s Unable to create SOCKS5 dialer %s", ctl, pr.Address)
 			failed++
 			continue
 		}
@@ -178,7 +555,7 @@ func (p *proxyapp) updateSocksList() {
 		defer cancel()
 		conn, err := dialer.(proxy.ContextDialer).DialContext(ctx, "tcp", pr.Address)
 		if err != nil && !errors.Is(err, io.EOF) { // check for EOF to include localhost SOCKS5 in the chain
-			p.logger.Error().Err(err).Msgf("[%s] Unable to connect to %s", chainType, pr.Address)
+			p.logger.Error().Err(err).Msgf("%s Unable to connect to %s", ctl, pr.Address)
 			failed++
 			continue
 		} else {
@@ -190,7 +567,7 @@ func (p *proxyapp) updateSocksList() {
 		}
 	}
 	if failed == len(p.proxylist) {
-		p.logger.Error().Err(err).Msgf("[%s] No SOCKS5 Proxy available", chainType)
+		p.logger.Error().Err(err).Msgf("%s No SOCKS5 Proxy available", ctl)
 		return
 	}
 	currentDialer := dialer
@@ -201,7 +578,7 @@ func (p *proxyapp) updateSocksList() {
 		}
 		dialer, err = proxy.SOCKS5("tcp", pr.Address, &auth, currentDialer)
 		if err != nil {
-			p.logger.Error().Err(err).Msgf("[%s] Unable to create SOCKS5 dialer %s", chainType, pr.Address)
+			p.logger.Error().Err(err).Msgf("%s Unable to create SOCKS5 dialer %s", ctl, pr.Address)
 			continue
 		}
 		// https://github.com/golang/go/issues/37549#issuecomment-1178745487
@@ -209,14 +586,14 @@ func (p *proxyapp) updateSocksList() {
 		defer cancel()
 		conn, err := dialer.(proxy.ContextDialer).DialContext(ctx, "tcp", pr.Address)
 		if err != nil {
-			p.logger.Error().Err(err).Msgf("[%s] Unable to connect to %s", chainType, pr.Address)
+			p.logger.Error().Err(err).Msgf("%s Unable to connect to %s", ctl, pr.Address)
 			continue
 		}
 		conn.Close()
 		currentDialer = dialer
 		p.availProxyList = append(p.availProxyList, proxyEntry{Address: pr.Address, Username: pr.Username, Password: pr.Password})
 	}
-	p.logger.Debug().Msgf("[%s] Available SOCKS5 Proxy [%d/%d]: %s", chainType,
+	p.logger.Debug().Msgf("%s Available SOCKS5 Proxy [%d/%d]: %s", ctl,
 		len(p.availProxyList), len(p.proxylist), p.printProxyChain(p.availProxyList))
 }
 
@@ -238,8 +615,14 @@ func (p *proxyapp) getSocks() (proxy.Dialer, *http.Client, error) {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	chainType := p.proxychain.Type
+	var ctl string
+	if p.nocolor {
+		ctl = colors.WrapBrackets(chainType)
+	} else {
+		ctl = colors.WrapBrackets(colors.LightBlueBg(chainType).String())
+	}
 	if len(p.availProxyList) == 0 {
-		p.logger.Error().Msgf("[%s] No SOCKS5 Proxy available", chainType)
+		p.logger.Error().Msgf("%s No SOCKS5 Proxy available", ctl)
 		return nil, nil, fmt.Errorf("no socks5 proxy available")
 	}
 	var chainLength int
@@ -278,11 +661,11 @@ func (p *proxyapp) getSocks() (proxy.Dialer, *http.Client, error) {
 		p.logger.Fatal().Msg("Unreachable")
 	}
 	if len(copyProxyList) == 0 {
-		p.logger.Error().Msgf("[%s] No SOCKS5 Proxy available", chainType)
+		p.logger.Error().Msgf("%s No SOCKS5 Proxy available", ctl)
 		return nil, nil, fmt.Errorf("no socks5 proxy available")
 	}
 	if p.proxychain.Type == "strict" && len(copyProxyList) != len(p.proxylist) {
-		p.logger.Error().Msgf("[%s] Not all SOCKS5 Proxy available", chainType)
+		p.logger.Error().Msgf("%s Not all SOCKS5 Proxy available", ctl)
 		return nil, nil, fmt.Errorf("not all socks5 proxy available")
 	}
 	var dialer proxy.Dialer = &net.Dialer{Timeout: timeout}
@@ -294,7 +677,7 @@ func (p *proxyapp) getSocks() (proxy.Dialer, *http.Client, error) {
 		}
 		dialer, err = proxy.SOCKS5("tcp", pr.Address, &auth, dialer)
 		if err != nil {
-			p.logger.Error().Err(err).Msgf("[%s] Unable to create SOCKS5 dialer %s", chainType, pr.Address)
+			p.logger.Error().Err(err).Msgf("%s Unable to create SOCKS5 dialer %s", ctl, pr.Address)
 			return nil, nil, err
 		}
 	}
@@ -306,7 +689,7 @@ func (p *proxyapp) getSocks() (proxy.Dialer, *http.Client, error) {
 			return http.ErrUseLastResponse
 		},
 	}
-	p.logger.Debug().Msgf("[%s] Request chain: %s", chainType, p.printProxyChain(copyProxyList))
+	p.logger.Debug().Msgf("%s Request chain: %s", ctl, p.printProxyChain(copyProxyList))
 	return dialer, socks, nil
 }
 
@@ -339,7 +722,11 @@ func (p *proxyapp) doReq(w http.ResponseWriter, r *http.Request, sock *http.Clie
 }
 
 func (p *proxyapp) handleForward(w http.ResponseWriter, r *http.Request) {
-
+	var reqBodySaved []byte
+	if p.sniff && p.body {
+		reqBodySaved, _ = io.ReadAll(io.LimitReader(r.Body, maxBodySize))
+		r.Body = io.NopCloser(io.MultiReader(bytes.NewReader(reqBodySaved), r.Body))
+	}
 	req, err := http.NewRequest(r.Method, r.URL.String(), r.Body)
 	if err != nil {
 		p.logger.Error().Err(err).Msgf("Error during NewRequest() %s: %s", r.URL.String(), err)
@@ -355,21 +742,10 @@ func (p *proxyapp) handleForward(w http.ResponseWriter, r *http.Request) {
 	}
 	var resp *http.Response
 	var chunked bool
+	var respBodySaved []byte
 	p.httpClient.Timeout = timeout
 	if isLocalAddress(r.Host) {
 		resp = p.doReq(w, req, nil)
-		if resp == nil {
-			return
-		}
-		if slices.Contains(resp.TransferEncoding, "chunked") {
-			chunked = true
-			p.httpClient.Timeout = 0
-			resp.Body.Close()
-			resp = p.doReq(w, req, nil)
-			if resp == nil {
-				return
-			}
-		}
 	} else {
 		_, sockClient, err := p.getSocks()
 		if err != nil {
@@ -378,32 +754,54 @@ func (p *proxyapp) handleForward(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		resp = p.doReq(w, req, sockClient)
-		if resp == nil {
-			return
-		}
-		if slices.Contains(resp.TransferEncoding, "chunked") {
-			chunked = true
-			sockClient.Timeout = 0
-			resp.Body.Close()
-			resp = p.doReq(w, req, sockClient)
-			if resp == nil {
-				return
+	}
+	if resp == nil {
+		return
+	}
+	chunked = slices.Contains(resp.TransferEncoding, "chunked")
+	if p.sniff {
+		if p.body {
+			if chunked {
+				buf := make([]byte, maxBodySize)
+				n, _ := resp.Body.Read(buf)
+				respBodySaved = buf[:n]
+				resp.Body = io.NopCloser(io.MultiReader(bytes.NewReader(buf[:n]), resp.Body))
+			} else {
+				respBodySaved, _ = io.ReadAll(io.LimitReader(resp.Body, maxBodySize))
+				resp.Body = io.NopCloser(io.MultiReader(bytes.NewReader(respBodySaved), resp.Body))
 			}
+			if resp.Header.Get("Content-Encoding") == "gzip" {
+				gzr, err := gzip.NewReader(bytes.NewReader(respBodySaved))
+				if err == nil {
+					respBodySaved, _ = io.ReadAll(gzr)
+				}
+			}
+			reqBodySaved = bytes.Trim(reqBodySaved, "\r\n\t ")
+			respBodySaved = bytes.Trim(respBodySaved, "\r\n\t ")
+		}
+		if p.json {
+			sniffheader := make([]string, 0, 4)
+			j, err := json.Marshal(&layers.HTTPMessage{Request: r})
+			if err == nil {
+				sniffheader = append(sniffheader, string(j))
+			}
+			j, err = json.Marshal(&layers.HTTPMessage{Response: resp})
+			if err == nil {
+				sniffheader = append(sniffheader, string(j))
+			}
+			if p.body && len(reqBodySaved) > 0 {
+				sniffheader = append(sniffheader, fmt.Sprintf("{\"req_body\":%s}", reqBodySaved))
+			}
+			if p.body && len(respBodySaved) > 0 {
+				sniffheader = append(sniffheader, fmt.Sprintf("{\"resp_body\":%s}", respBodySaved))
+			}
+			p.snifflogger.Log().Msg(fmt.Sprintf("[%s]", strings.Join(sniffheader, ",")))
+		} else {
+			id := p.getId()
+			p.snifflogger.Log().Msg(p.colorizeHTTP(req, resp, &reqBodySaved, &respBodySaved, id, false))
 		}
 	}
 	defer resp.Body.Close()
-	if p.sniff {
-		sniffheader := make([]string, 0, 2)
-		j, err := json.Marshal(&layers.HTTPMessage{Request: r})
-		if err == nil {
-			sniffheader = append(sniffheader, string(j))
-		}
-		j, err = json.Marshal(&layers.HTTPMessage{Response: resp})
-		if err == nil {
-			sniffheader = append(sniffheader, string(j))
-		}
-		p.snifflogger.Debug().Msg(fmt.Sprintf("[%s]", strings.Join(sniffheader, ",")))
-	}
 	done := make(chan bool)
 	if chunked {
 		rc := http.NewResponseController(w)
@@ -459,7 +857,11 @@ func (p *proxyapp) handleForward(w http.ResponseWriter, r *http.Request) {
 	if chunked {
 		written = fmt.Sprintf("%s - chunked", written)
 	}
-	p.logger.Debug().Msgf("%s - %s - %s - %d - %s", r.Proto, r.Method, r.Host, resp.StatusCode, written)
+	status := resp.Status
+	if !p.nocolor {
+		status = p.colorizeStatus(resp.StatusCode, status, false)
+	}
+	p.logger.Debug().Msgf("%s - %s - %s - %s - %s", r.Proto, r.Method, r.Host, status, written)
 	if len(resp.Trailer) == announcedTrailers {
 		copyHeader(w.Header(), resp.Trailer)
 	}
@@ -520,75 +922,103 @@ func (p *proxyapp) handleTunnel(w http.ResponseWriter, r *http.Request) {
 
 	p.logger.Debug().Msgf("%s - %s - %s", r.Proto, r.Method, r.Host)
 	p.logger.Debug().Msgf("src: %s - dst: %s", srcConnStr, dstConnStr)
-	reqChan := make(chan []byte)
-	respChan := make(chan []byte)
+	reqChan := make(chan layers.Layer)
+	respChan := make(chan layers.Layer)
 	var wg sync.WaitGroup
 	wg.Add(2)
 	go p.transfer(&wg, dstConn, srcConn, dstConnStr, srcConnStr, reqChan)
 	go p.transfer(&wg, srcConn, dstConn, srcConnStr, dstConnStr, respChan)
 	if p.sniff {
 		wg.Add(1)
-		sniffheader := make([]string, 0, 4)
-		sniffheader = append(sniffheader, fmt.Sprintf("{\"connection\":{\"src_local\":%q,\"src_remote\":%q,\"dst_local\":%q,\"dst_remote\":%q}}",
-			srcConn.LocalAddr(), srcConn.RemoteAddr(), dstConn.LocalAddr(), dstConn.RemoteAddr()))
-		j, err := json.Marshal(&layers.HTTPMessage{Request: r})
-		if err == nil {
-			sniffheader = append(sniffheader, string(j))
+		sniffheader := make([]string, 0, 6)
+		id := p.getId()
+		if p.json {
+			sniffheader = append(sniffheader, fmt.Sprintf("{\"connection\":{\"src_local\":%s,\"src_remote\":%s,\"dst_local\":%s,\"dst_remote\":%s}}",
+				srcConn.LocalAddr(), srcConn.RemoteAddr(), dstConn.LocalAddr(), dstConn.RemoteAddr()))
+			j, err := json.Marshal(&layers.HTTPMessage{Request: r})
+			if err == nil {
+				sniffheader = append(sniffheader, string(j))
+			}
+		} else {
+			var sb strings.Builder
+			if p.nocolor {
+				sb.WriteString(id)
+				sb.WriteString(fmt.Sprintf(" Src: %s->%s -> Dst: %s->%s", srcConn.LocalAddr(), srcConn.RemoteAddr(), dstConn.LocalAddr(), dstConn.RemoteAddr()))
+				sb.WriteString("\n")
+				sb.WriteString(fmt.Sprintf("%s ", p.colorizeTimestamp()))
+				sb.WriteString(id)
+				sb.WriteString(fmt.Sprintf(" %s %s %s ", r.Method, r.Host, r.Proto))
+			} else {
+				sb.WriteString(id)
+				sb.WriteString(colors.Green(fmt.Sprintf(" Src: %s->%s", srcConn.LocalAddr(), srcConn.RemoteAddr())).String())
+				sb.WriteString(colors.Magenta(" -> ").String())
+				sb.WriteString(colors.Blue(fmt.Sprintf("Dst: %s->%s", dstConn.LocalAddr(), dstConn.RemoteAddr())).String())
+				sb.WriteString("\n")
+				sb.WriteString(fmt.Sprintf("%s ", p.colorizeTimestamp()))
+				sb.WriteString(id)
+				sb.WriteString(colors.Gray(fmt.Sprintf(" %s ", r.Method)).String())
+				sb.WriteString(colors.YellowBg(fmt.Sprintf("%s ", r.Host)).String())
+				sb.WriteString(colors.BlueBg(fmt.Sprintf("%s ", r.Proto)).String())
+			}
+			sniffheader = append(sniffheader, sb.String())
 		}
-		go p.sniffreporter(&wg, &sniffheader, reqChan, respChan)
+		go p.sniffreporter(&wg, &sniffheader, reqChan, respChan, id)
 	}
 	wg.Wait()
 }
 
-func (p *proxyapp) sniffreporter(wg *sync.WaitGroup, sniffheader *[]string, reqChan <-chan []byte, respChan <-chan []byte) {
+func (p *proxyapp) sniffreporter(wg *sync.WaitGroup, sniffheader *[]string, reqChan, respChan <-chan layers.Layer, id string) {
 	defer wg.Done()
 	sniffheaderlen := len(*sniffheader)
+	var reqQueue, respQueue []layers.Layer
 	for {
-		req, okreq := <-reqChan // FIX: if resp comes first it blocks
-		resp, okresp := <-respChan
-		if !okreq || !okresp {
-			return
+		select {
+		case req, ok := <-reqChan:
+			if !ok {
+				return
+			} else {
+				reqQueue = append(reqQueue, req)
+			}
+		case resp, ok := <-respChan:
+			if !ok {
+				return
+			} else if len(reqQueue) > 0 { // HACK: is this right?
+				respQueue = append(respQueue, resp)
+			}
 		}
-		*sniffheader = append(*sniffheader, string(req), string(resp))
-		p.snifflogger.Debug().Msg(fmt.Sprintf("[%s]", strings.Join(*sniffheader, ",")))
-		*sniffheader = (*sniffheader)[:sniffheaderlen]
+		if len(reqQueue) > 0 && len(respQueue) > 0 {
+			req := reqQueue[0]
+			resp := respQueue[0]
+			reqQueue = reqQueue[1:]
+			respQueue = respQueue[1:]
+
+			err := p.colorizeTunnel(req, resp, sniffheader, id)
+			if err == nil && len(*sniffheader) > sniffheaderlen {
+				if p.json {
+					p.snifflogger.Log().Msg(fmt.Sprintf("[%s]", strings.Join(*sniffheader, ",")))
+				} else {
+					p.snifflogger.Log().Msg(fmt.Sprintf("%s", strings.Join(*sniffheader, "\n")))
+				}
+			}
+			*sniffheader = (*sniffheader)[:sniffheaderlen]
+		}
 	}
 }
 
-func sniff(data []byte) ([]byte, error) {
+func dispatch(data []byte) (layers.Layer, error) {
 	// TODO: check if it is http or tls beforehand
 	h := &layers.HTTPMessage{}
 	if err := h.Parse(data); err == nil && !h.IsEmpty() {
-		j, err := json.Marshal(h)
-		if err == nil {
-			return j, nil
-		}
+		return h, nil
 	}
 	m := &layers.TLSMessage{}
-	if err := m.Parse(data); err != nil {
-		return nil, err
-	}
-	if len(m.Records) > 0 {
-		hsrec := m.Records[0]
-		if hsrec.ContentType == layers.HandshakeTLSVal { // TODO: add more cases, parse all records
-			switch parser := layers.HSTLSParserByType(hsrec.Data[0]).(type) {
-			case *layers.TLSClientHello, *layers.TLSServerHello:
-				err := parser.ParseHS(hsrec.Data)
-				if err != nil {
-					return nil, err
-				}
-				j, err := json.Marshal(parser)
-				if err != nil {
-					return nil, err
-				}
-				return j, nil
-			}
-		}
+	if err := m.Parse(data); err == nil {
+		return m, nil
 	}
 	return nil, fmt.Errorf("failed sniffing traffic")
 }
 
-func (p *proxyapp) copyWithTimeout(dst net.Conn, src net.Conn, msgChan chan<- []byte) (written int64, err error) {
+func (p *proxyapp) copyWithTimeout(dst net.Conn, src net.Conn, msgChan chan<- layers.Layer) (written int64, err error) {
 	buf := make([]byte, 32*1024)
 	for {
 		er := src.SetReadDeadline(time.Now().Add(readTimeout))
@@ -604,9 +1034,9 @@ func (p *proxyapp) copyWithTimeout(dst net.Conn, src net.Conn, msgChan chan<- []
 				break
 			}
 			if p.sniff {
-				s, err := sniff(buf[0:nr])
+				l, err := dispatch(buf[0:nr])
 				if err == nil {
-					msgChan <- s
+					msgChan <- l
 				}
 			}
 			nw, ew := dst.Write(buf[0:nr])
@@ -641,7 +1071,7 @@ func (p *proxyapp) copyWithTimeout(dst net.Conn, src net.Conn, msgChan chan<- []
 	return written, err
 }
 
-func (p *proxyapp) transfer(wg *sync.WaitGroup, dst net.Conn, src net.Conn, destName, srcName string, msgChan chan<- []byte) {
+func (p *proxyapp) transfer(wg *sync.WaitGroup, dst net.Conn, src net.Conn, destName, srcName string, msgChan chan<- layers.Layer) {
 	defer func() {
 		wg.Done()
 		close(msgChan)
@@ -723,9 +1153,15 @@ func (p *proxyapp) Run() {
 	}
 	if p.proxylist != nil {
 		chainType := p.proxychain.Type
+		var ctl string
+		if p.nocolor {
+			ctl = colors.WrapBrackets(chainType)
+		} else {
+			ctl = colors.WrapBrackets(colors.LightBlueBg(chainType).String())
+		}
 		go func() {
 			for {
-				p.logger.Debug().Msgf("[%s] Updating available proxy", chainType)
+				p.logger.Debug().Msgf("%s Updating available proxy", ctl)
 				p.updateSocksList()
 				time.Sleep(availProxyUpdateInterval)
 			}
@@ -776,27 +1212,6 @@ func (p *proxyapp) Run() {
 		tproxyServer.ListenAndServe()
 	}
 	<-done
-}
-
-type Config struct {
-	AddrHTTP       string
-	AddrSOCKS      string
-	User           string
-	Pass           string
-	ServerUser     string
-	ServerPass     string
-	CertFile       string
-	KeyFile        string
-	ServerConfPath string
-	TProxy         string
-	TProxyOnly     string
-	TProxyMode     string
-	LogFilePath    string
-	Debug          bool
-	Json           bool
-	Sniff          bool
-	SniffLogFile   string
-	Color          bool
 }
 
 type logWriter struct {
@@ -876,6 +1291,8 @@ func New(conf *Config) *proxyapp {
 	var logfile *os.File = os.Stdout
 	var snifflog *os.File
 	p.sniff = conf.Sniff
+	p.body = conf.Body
+	p.json = conf.Json
 	if conf.LogFilePath != "" {
 		f, err := os.OpenFile(conf.LogFilePath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
 		if err != nil {
@@ -892,6 +1309,7 @@ func New(conf *Config) *proxyapp {
 	} else {
 		snifflog = logfile
 	}
+	p.nocolor = conf.Json || conf.NoColor
 	if conf.Json {
 		log.SetFlags(0)
 		jsonWriter := jsonLogWriter{file: logfile}
@@ -902,11 +1320,83 @@ func New(conf *Config) *proxyapp {
 		log.SetFlags(0)
 		logWriter := logWriter{file: logfile}
 		log.SetOutput(logWriter)
-		noColor := !conf.Color || logfile != os.Stdout
-		sniffNoColor := !conf.Color || snifflog != os.Stdout
-		output := zerolog.ConsoleWriter{Out: logfile, TimeFormat: time.RFC3339, NoColor: noColor}
+		output := zerolog.ConsoleWriter{Out: logfile, NoColor: p.nocolor}
+
+		output.FormatTimestamp = func(i any) string {
+			ts, _ := time.Parse(time.RFC3339, i.(string))
+			if p.nocolor {
+				return colors.WrapBrackets(ts.Format(time.TimeOnly))
+			}
+			return colors.Gray(colors.WrapBrackets(ts.Format(time.TimeOnly))).String()
+		}
+		output.FormatMessage = func(i any) string {
+			if i == nil || i == "" {
+				return ""
+			}
+			s := i.(string)
+			if p.nocolor {
+				return fmt.Sprintf("%s", s)
+			}
+			result := ipPortPattern.ReplaceAllStringFunc(s, func(match string) string {
+				return colors.Gray(match).String()
+			})
+			result = domainPattern.ReplaceAllStringFunc(result, func(match string) string {
+				return colors.Yellow(match).String()
+			})
+			return result
+		}
+
+		output.FormatErrFieldName = func(i any) string {
+			return fmt.Sprintf("%s", i)
+		}
+
+		output.FormatErrFieldValue = func(i any) string {
+			s := i.(string)
+			if p.nocolor {
+				return fmt.Sprintf("%s", s)
+			}
+			result := ipPortPattern.ReplaceAllStringFunc(s, func(match string) string {
+				return colors.Red(match).String()
+			})
+			result = domainPattern.ReplaceAllStringFunc(result, func(match string) string {
+				return colors.Red(match).String()
+			})
+			return result
+
+		}
 		logger = zerolog.New(output).With().Timestamp().Logger()
-		sniffoutput := zerolog.ConsoleWriter{Out: snifflog, TimeFormat: time.RFC3339, NoColor: sniffNoColor}
+		sniffoutput := zerolog.ConsoleWriter{Out: snifflog, TimeFormat: time.RFC3339, NoColor: p.nocolor, PartsExclude: []string{"level"}}
+		sniffoutput.FormatTimestamp = func(i any) string {
+			ts, _ := time.Parse(time.RFC3339, i.(string))
+			if p.nocolor {
+				return colors.WrapBrackets(ts.Format(time.TimeOnly))
+			}
+			return colors.Gray(colors.WrapBrackets(ts.Format(time.TimeOnly))).String()
+		}
+		sniffoutput.FormatMessage = func(i any) string {
+			if i == nil || i == "" {
+				return ""
+			}
+			return fmt.Sprintf("%s", i)
+		}
+		sniffoutput.FormatErrFieldName = func(i any) string {
+			return fmt.Sprintf("%s", i)
+		}
+
+		sniffoutput.FormatErrFieldValue = func(i any) string {
+			s := i.(string)
+			if p.nocolor {
+				return fmt.Sprintf("%s", s)
+			}
+			result := ipPortPattern.ReplaceAllStringFunc(s, func(match string) string {
+				return colors.Red(match).String()
+			})
+			result = domainPattern.ReplaceAllStringFunc(result, func(match string) string {
+				return colors.Red(match).String()
+			})
+			return result
+
+		}
 		snifflogger = zerolog.New(sniffoutput).With().Timestamp().Logger()
 	}
 	zerolog.SetGlobalLevel(zerolog.InfoLevel)
@@ -1034,6 +1524,7 @@ func New(conf *Config) *proxyapp {
 			CheckRedirect: func(req *http.Request, via []*http.Request) error {
 				return http.ErrUseLastResponse
 			},
+			Timeout: timeout,
 		}
 	}
 	if conf.ServerConfPath != "" {
