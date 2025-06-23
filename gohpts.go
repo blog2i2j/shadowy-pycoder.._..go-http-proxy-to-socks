@@ -73,6 +73,25 @@ var hopHeaders = []string{
 	"Upgrade",
 }
 
+var rColors = []func(string) *colors.Color{
+	colors.Beige,
+	colors.Blue,
+	colors.Gray,
+	colors.Green,
+	colors.LightBlue,
+	colors.Magenta,
+	colors.Red,
+	colors.Yellow,
+	colors.BeigeBg,
+	colors.BlueBg,
+	colors.GrayBg,
+	colors.GreenBg,
+	colors.LightBlueBg,
+	colors.MagentaBg,
+	colors.RedBgDark,
+	colors.YellowBg,
+}
+
 func copyHeader(dst, src http.Header) {
 	for k, vv := range src {
 		for _, v := range vv {
@@ -366,6 +385,20 @@ func (p *proxyapp) doReq(w http.ResponseWriter, r *http.Request, sock *http.Clie
 	return resp
 }
 
+func randColor() func(string) *colors.Color {
+	r := rand.New(rand.NewSource(time.Now().UnixNano()))
+	randIndex := r.Intn(len(rColors))
+	return rColors[randIndex]
+}
+
+func (p *proxyapp) getId() string {
+	id := uuid.New()
+	if p.sniffnocolor {
+		return fmt.Sprintf("%s", colors.WrapBrackets(id.String()))
+	}
+	return randColor()(fmt.Sprintf("%s", colors.WrapBrackets(id.String()))).String()
+}
+
 func (p *proxyapp) colorizeStatus(code int, status string, bg bool) string {
 	if bg {
 		if code < 300 {
@@ -387,18 +420,21 @@ func (p *proxyapp) colorizeStatus(code int, status string, bg bool) string {
 	return status
 }
 
-func (p *proxyapp) colorizeHTTP(req *http.Request, resp *http.Response, reqBodySaved, respBodySaved *[]byte, id uuid.UUID) string {
+func (p *proxyapp) colorizeHTTP(req *http.Request, resp *http.Response, reqBodySaved, respBodySaved *[]byte, id string, ts bool) string {
 	var sb strings.Builder
+	if ts {
+		sb.WriteString(fmt.Sprintf("%s ", p.colorizeTimestamp()))
+	}
 	if p.sniffnocolor {
-		sb.WriteString(fmt.Sprintf("%s ", colors.WrapBrackets(id.String())))
-		sb.WriteString(fmt.Sprintf("%s %s %s ", req.Method, req.URL, req.Proto))
+		sb.WriteString(id)
+		sb.WriteString(fmt.Sprintf(" %s %s %s ", req.Method, req.URL, req.Proto))
 		if req.UserAgent() != "" {
-			sb.WriteString(fmt.Sprintf("%s ", colors.WrapBrackets(req.UserAgent())))
+			sb.WriteString(fmt.Sprintf("%s", colors.WrapBrackets(req.UserAgent())))
 		}
 		if req.ContentLength > 0 {
-			sb.WriteString(fmt.Sprintf("Len: %d ", req.ContentLength))
+			sb.WriteString(fmt.Sprintf(" Len: %d", req.ContentLength))
 		}
-		sb.WriteString("-> ")
+		sb.WriteString(" -> ")
 		sb.WriteString(fmt.Sprintf("%s %s ", resp.Proto, resp.Status))
 		if resp.ContentLength > 0 {
 			sb.WriteString(fmt.Sprintf("Len: %d", resp.ContentLength))
@@ -408,8 +444,8 @@ func (p *proxyapp) colorizeHTTP(req *http.Request, resp *http.Response, reqBodyS
 			if b != "" {
 				sb.WriteString("\n")
 				sb.WriteString(fmt.Sprintf("%s ", p.colorizeTimestamp()))
-				sb.WriteString(fmt.Sprintf("%s ", colors.WrapBrackets(id.String())))
-				sb.WriteString(fmt.Sprintf("req_body: %s", b))
+				sb.WriteString(id)
+				sb.WriteString(fmt.Sprintf(" req_body: %s", b))
 			}
 		}
 		if p.body && len(*respBodySaved) > 0 {
@@ -417,22 +453,22 @@ func (p *proxyapp) colorizeHTTP(req *http.Request, resp *http.Response, reqBodyS
 			if b != "" {
 				sb.WriteString("\n")
 				sb.WriteString(fmt.Sprintf("%s ", p.colorizeTimestamp()))
-				sb.WriteString(fmt.Sprintf("%s ", colors.WrapBrackets(id.String())))
-				sb.WriteString(fmt.Sprintf("resp_body: %s", b))
+				sb.WriteString(id)
+				sb.WriteString(fmt.Sprintf(" resp_body: %s", b))
 			}
 		}
 	} else {
-		sb.WriteString(colors.BlueBg(fmt.Sprintf("%s ", colors.WrapBrackets(id.String()))).String())
-		sb.WriteString(colors.GreenBg(fmt.Sprintf("%s ", req.Method)).String())
+		sb.WriteString(id)
+		sb.WriteString(colors.Gray(fmt.Sprintf(" %s ", req.Method)).String())
 		sb.WriteString(colors.YellowBg(fmt.Sprintf("%s ", req.URL)).String())
-		sb.WriteString(colors.GreenBg(fmt.Sprintf("%s ", req.Proto)).String())
+		sb.WriteString(colors.BlueBg(fmt.Sprintf("%s ", req.Proto)).String())
 		if req.UserAgent() != "" {
-			sb.WriteString(colors.Gray(fmt.Sprintf("%s ", colors.WrapBrackets(req.UserAgent()))).String())
+			sb.WriteString(colors.Gray(fmt.Sprintf("%s", colors.WrapBrackets(req.UserAgent()))).String())
 		}
 		if req.ContentLength > 0 {
-			sb.WriteString(colors.BeigeBg(fmt.Sprintf("Len: %d ", req.ContentLength)).String())
+			sb.WriteString(colors.BeigeBg(fmt.Sprintf(" Len: %d", req.ContentLength)).String())
 		}
-		sb.WriteString(colors.MagentaBg("-> ").String())
+		sb.WriteString(colors.MagentaBg(" -> ").String())
 		sb.WriteString(colors.BlueBg(fmt.Sprintf("%s ", resp.Proto)).String())
 		sb.WriteString(p.colorizeStatus(resp.StatusCode, fmt.Sprintf("%s ", resp.Status), true))
 		if resp.ContentLength > 0 {
@@ -443,8 +479,8 @@ func (p *proxyapp) colorizeHTTP(req *http.Request, resp *http.Response, reqBodyS
 			if b != "" {
 				sb.WriteString("\n")
 				sb.WriteString(fmt.Sprintf("%s ", p.colorizeTimestamp()))
-				sb.WriteString(colors.BlueBg(fmt.Sprintf("%s ", colors.WrapBrackets(id.String()))).String())
-				sb.WriteString(colors.GreenBg("req_body: ").String())
+				sb.WriteString(id)
+				sb.WriteString(colors.GreenBg(" req_body: ").String())
 				sb.WriteString(b)
 			}
 		}
@@ -453,8 +489,8 @@ func (p *proxyapp) colorizeHTTP(req *http.Request, resp *http.Response, reqBodyS
 			if b != "" {
 				sb.WriteString("\n")
 				sb.WriteString(fmt.Sprintf("%s ", p.colorizeTimestamp()))
-				sb.WriteString(colors.BlueBg(fmt.Sprintf("%s ", colors.WrapBrackets(id.String()))).String())
-				sb.WriteString(colors.GreenBg("resp_body: ").String())
+				sb.WriteString(id)
+				sb.WriteString(colors.GreenBg(" resp_body: ").String())
 				sb.WriteString(b)
 			}
 		}
@@ -462,8 +498,76 @@ func (p *proxyapp) colorizeHTTP(req *http.Request, resp *http.Response, reqBodyS
 	return sb.String()
 }
 
-func (p *proxyapp) colorizeTLS(req *layers.TLSClientHello, resp *layers.TLSServerHello, id uuid.UUID) string {
-	return "TODO:"
+func (p *proxyapp) colorizeTLS(req *layers.TLSClientHello, resp *layers.TLSServerHello, id string) string {
+	var sb strings.Builder
+	if p.sniffnocolor {
+		sb.WriteString(fmt.Sprintf("%s ", p.colorizeTimestamp()))
+		sb.WriteString(id)
+		sb.WriteString(fmt.Sprintf(" %s:", req.TypeDesc))
+		if req.Length > 0 {
+			sb.WriteString(fmt.Sprintf(" Len: %d", req.Length))
+		}
+		if req.ServerName != nil && req.ServerName.SNName != "" {
+			sb.WriteString(fmt.Sprintf(" SNI: %s", req.ServerName.SNName))
+		}
+		if req.Version != nil && req.Version.Desc != "" {
+			sb.WriteString(fmt.Sprintf(" Ver: %s", req.Version.Desc))
+		}
+		if req.SessionID != "" {
+			sb.WriteString(fmt.Sprintf(" SID: %s", req.SessionID))
+		}
+		if req.ALPN != nil {
+			sb.WriteString(fmt.Sprintf(" ALPN: %v", req.ALPN))
+		}
+		sb.WriteString(" -> ")
+		sb.WriteString(fmt.Sprintf("%s:", resp.TypeDesc))
+		if resp.Length > 0 {
+			sb.WriteString(fmt.Sprintf(" Len: %d", resp.Length))
+		}
+		if resp.CipherSuite != nil && resp.CipherSuite.Desc != "" {
+			sb.WriteString(fmt.Sprintf(" CS: %s", resp.CipherSuite.Desc))
+		}
+		if resp.SupportedVersion != nil && resp.SupportedVersion.Desc != "" {
+			sb.WriteString(fmt.Sprintf(" Ver: %s", resp.SupportedVersion.Desc))
+		}
+		if resp.ExtensionLength > 0 {
+			sb.WriteString(fmt.Sprintf(" ExtLen: %d", resp.ExtensionLength))
+		}
+	} else {
+		sb.WriteString(fmt.Sprintf("%s ", p.colorizeTimestamp()))
+		sb.WriteString(id)
+		sb.WriteString(colors.Magenta(fmt.Sprintf(" %s:", req.TypeDesc)).Bold())
+		if req.Length > 0 {
+			sb.WriteString(colors.BeigeBg(fmt.Sprintf(" Len: %d", req.Length)).String())
+		}
+		if req.ServerName != nil && req.ServerName.SNName != "" {
+			sb.WriteString(colors.YellowBg(fmt.Sprintf(" SNI: %s", req.ServerName.SNName)).String())
+		}
+		if req.Version != nil && req.Version.Desc != "" {
+			sb.WriteString(colors.GreenBg(fmt.Sprintf(" Ver: %s", req.Version.Desc)).String())
+		}
+		if req.SessionID != "" {
+			sb.WriteString(colors.Gray(fmt.Sprintf(" SID: %s", req.SessionID)).String())
+		}
+		if req.ALPN != nil {
+			sb.WriteString(colors.BlueBg(fmt.Sprintf(" ALPN: %v", req.ALPN)).String())
+		}
+		sb.WriteString(colors.MagentaBg(" -> ").String())
+		sb.WriteString(colors.LightBlue(fmt.Sprintf("%s:", resp.TypeDesc)).Bold())
+		if resp.Length > 0 {
+			sb.WriteString(colors.BeigeBg(fmt.Sprintf(" Len: %d", resp.Length)).String())
+		}
+		if resp.CipherSuite != nil && resp.CipherSuite.Desc != "" {
+			sb.WriteString(colors.Yellow(fmt.Sprintf(" CS: %s", resp.CipherSuite.Desc)).Bold())
+		}
+		if resp.SupportedVersion != nil && resp.SupportedVersion.Desc != "" {
+			sb.WriteString(colors.GreenBg(fmt.Sprintf(" Ver: %s", resp.SupportedVersion.Desc)).String())
+		}
+		if resp.ExtensionLength > 0 {
+			sb.WriteString(colors.BeigeBg(fmt.Sprintf(" ExtLen: %d", resp.ExtensionLength)).String())
+		}
+	}
+	return sb.String()
 }
 
 func (p *proxyapp) highlightPatterns(line string) (string, bool) {
@@ -587,8 +691,8 @@ func (p *proxyapp) handleForward(w http.ResponseWriter, r *http.Request) {
 			}
 			p.snifflogger.Log().Msg(fmt.Sprintf("[%s]", strings.Join(sniffheader, ",")))
 		} else {
-			id := uuid.New()
-			p.snifflogger.Log().Msg(p.colorizeHTTP(req, resp, &reqBodySaved, &respBodySaved, id))
+			id := p.getId()
+			p.snifflogger.Log().Msg(p.colorizeHTTP(req, resp, &reqBodySaved, &respBodySaved, id, false))
 		}
 	}
 	defer resp.Body.Close()
@@ -721,7 +825,7 @@ func (p *proxyapp) handleTunnel(w http.ResponseWriter, r *http.Request) {
 	if p.sniff {
 		wg.Add(1)
 		sniffheader := make([]string, 0, 6)
-		id := uuid.New()
+		id := p.getId()
 		if p.json {
 			sniffheader = append(sniffheader, fmt.Sprintf("{\"connection\":{\"src_local\":%s,\"src_remote\":%s,\"dst_local\":%s,\"dst_remote\":%s}}",
 				srcConn.LocalAddr(), srcConn.RemoteAddr(), dstConn.LocalAddr(), dstConn.RemoteAddr()))
@@ -730,14 +834,34 @@ func (p *proxyapp) handleTunnel(w http.ResponseWriter, r *http.Request) {
 				sniffheader = append(sniffheader, string(j))
 			}
 		} else {
-			// TODO:
+			var sb strings.Builder
+			if p.sniffnocolor {
+				sb.WriteString(id)
+				sb.WriteString(fmt.Sprintf(" Src: %s->%s -> Dst: %s->%s", srcConn.LocalAddr(), srcConn.RemoteAddr(), dstConn.LocalAddr(), dstConn.RemoteAddr()))
+				sb.WriteString("\n")
+				sb.WriteString(fmt.Sprintf("%s ", p.colorizeTimestamp()))
+				sb.WriteString(id)
+				sb.WriteString(fmt.Sprintf(" %s %s %s ", r.Method, r.URL, r.Proto))
+			} else {
+				sb.WriteString(id)
+				sb.WriteString(colors.Green(fmt.Sprintf(" Src: %s->%s", srcConn.LocalAddr(), srcConn.RemoteAddr())).String())
+				sb.WriteString(colors.Magenta(" -> ").String())
+				sb.WriteString(colors.Blue(fmt.Sprintf("Dst: %s->%s", dstConn.LocalAddr(), dstConn.RemoteAddr())).String())
+				sb.WriteString("\n")
+				sb.WriteString(fmt.Sprintf("%s ", p.colorizeTimestamp()))
+				sb.WriteString(id)
+				sb.WriteString(colors.Gray(fmt.Sprintf(" %s ", r.Method)).String())
+				sb.WriteString(colors.YellowBg(fmt.Sprintf("%s ", r.URL)).String())
+				sb.WriteString(colors.BlueBg(fmt.Sprintf("%s ", r.Proto)).String())
+			}
+			sniffheader = append(sniffheader, sb.String())
 		}
 		go p.sniffreporter(&wg, &sniffheader, reqChan, respChan, id)
 	}
 	wg.Wait()
 }
 
-func (p *proxyapp) colorizeReqResp(req, resp layers.Layer, sniffheader *[]string, id uuid.UUID) error {
+func (p *proxyapp) colorizeReqResp(req, resp layers.Layer, sniffheader *[]string, id string) error {
 	switch reqt := req.(type) {
 	case *layers.HTTPMessage:
 		var reqBodySaved, respBodySaved []byte
@@ -765,7 +889,7 @@ func (p *proxyapp) colorizeReqResp(req, resp layers.Layer, sniffheader *[]string
 				*sniffheader = append(*sniffheader, fmt.Sprintf("{\"resp_body\":%s}", respBodySaved))
 			}
 		} else {
-			*sniffheader = append(*sniffheader, p.colorizeHTTP(reqt.Request, rest.Response, &reqBodySaved, &respBodySaved, id))
+			*sniffheader = append(*sniffheader, p.colorizeHTTP(reqt.Request, rest.Response, &reqBodySaved, &respBodySaved, id, true))
 		}
 	case *layers.TLSMessage:
 		var chs *layers.TLSClientHello
@@ -816,7 +940,7 @@ func (p *proxyapp) colorizeReqResp(req, resp layers.Layer, sniffheader *[]string
 	return nil
 }
 
-func (p *proxyapp) sniffreporter(wg *sync.WaitGroup, sniffheader *[]string, reqChan, respChan <-chan layers.Layer, id uuid.UUID) {
+func (p *proxyapp) sniffreporter(wg *sync.WaitGroup, sniffheader *[]string, reqChan, respChan <-chan layers.Layer, id string) {
 	defer wg.Done()
 	sniffheaderlen := len(*sniffheader)
 	var reqQueue, respQueue []layers.Layer
