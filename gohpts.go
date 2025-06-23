@@ -73,69 +73,26 @@ var hopHeaders = []string{
 	"Upgrade",
 }
 
-var rColors = []func(string) *colors.Color{
-	colors.Beige,
-	colors.Blue,
-	colors.Gray,
-	colors.Green,
-	colors.LightBlue,
-	colors.Magenta,
-	colors.Red,
-	colors.Yellow,
-	colors.BeigeBg,
-	colors.BlueBg,
-	colors.GrayBg,
-	colors.GreenBg,
-	colors.LightBlueBg,
-	colors.MagentaBg,
-	colors.RedBgDark,
-	colors.YellowBg,
-}
-
-func copyHeader(dst, src http.Header) {
-	for k, vv := range src {
-		for _, v := range vv {
-			dst.Add(k, v)
-		}
-	}
-}
-
-func delHopHeaders(header http.Header) {
-	for _, h := range hopHeaders {
-		header.Del(h)
-	}
-}
-
-// delConnectionHeaders removes hop-by-hop headers listed in the "Connection" header
-// https://datatracker.ietf.org/doc/html/rfc7230#section-6.1
-func delConnectionHeaders(h http.Header) {
-	for _, f := range h["Connection"] {
-		for sf := range strings.SplitSeq(f, ",") {
-			if sf = strings.TrimSpace(sf); sf != "" {
-				h.Del(sf)
-			}
-		}
-	}
-}
-
-func appendHostToXForwardHeader(header http.Header, host string) {
-	if prior, ok := header["X-Forwarded-For"]; ok {
-		host = strings.Join(prior, ", ") + ", " + host
-	}
-	header.Set("X-Forwarded-For", host)
-}
-
-func isLocalAddress(addr string) bool {
-	host, _, err := net.SplitHostPort(addr)
-	if err != nil {
-		host = addr
-	}
-	ip := net.ParseIP(host)
-	if ip != nil {
-		return ip.IsLoopback()
-	}
-	host = strings.ToLower(host)
-	return strings.HasSuffix(host, ".local") || host == "localhost"
+type Config struct {
+	AddrHTTP       string
+	AddrSOCKS      string
+	User           string
+	Pass           string
+	ServerUser     string
+	ServerPass     string
+	CertFile       string
+	KeyFile        string
+	ServerConfPath string
+	TProxy         string
+	TProxyOnly     string
+	TProxyMode     string
+	LogFilePath    string
+	Debug          bool
+	Json           bool
+	Sniff          bool
+	SniffLogFile   string
+	NoColor        bool
+	Body           bool
 }
 
 type proxyapp struct {
@@ -166,223 +123,23 @@ type proxyapp struct {
 	availProxyList []proxyEntry
 }
 
-func (p *proxyapp) printProxyChain(pc []proxyEntry) string {
-	var sb strings.Builder
-	sb.WriteString("client -> ")
-	if p.httpServerAddr != "" {
-		sb.WriteString(p.httpServerAddr)
-		if p.tproxyAddr != "" {
-			sb.WriteString(" | ")
-			sb.WriteString(p.tproxyAddr)
-			sb.WriteString(fmt.Sprintf(" (%s)", p.tproxyMode))
-		}
-	} else if p.tproxyAddr != "" {
-		sb.WriteString(p.tproxyAddr)
-		sb.WriteString(fmt.Sprintf(" (%s)", p.tproxyMode))
-	}
-	sb.WriteString(" -> ")
-	for _, pe := range pc {
-		sb.WriteString(pe.String())
-		sb.WriteString(" -> ")
-	}
-	sb.WriteString("target")
-	return sb.String()
-}
-
-func (p *proxyapp) updateSocksList() {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.availProxyList = p.availProxyList[:0]
-	var base proxy.Dialer = &net.Dialer{Timeout: timeout}
-	var dialer proxy.Dialer
-	var err error
-	failed := 0
-	chainType := p.proxychain.Type
-	var ctl string
-	if p.nocolor {
-		ctl = colors.WrapBrackets(chainType)
-	} else {
-		ctl = colors.WrapBrackets(colors.LightBlueBg(chainType).String())
-	}
-	for _, pr := range p.proxylist {
-		auth := proxy.Auth{
-			User:     pr.Username,
-			Password: pr.Password,
-		}
-		dialer, err = proxy.SOCKS5("tcp", pr.Address, &auth, base)
-		if err != nil {
-			p.logger.Error().Err(err).Msgf("%s Unable to create SOCKS5 dialer %s", ctl, pr.Address)
-			failed++
-			continue
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), hopTimeout)
-		defer cancel()
-		conn, err := dialer.(proxy.ContextDialer).DialContext(ctx, "tcp", pr.Address)
-		if err != nil && !errors.Is(err, io.EOF) { // check for EOF to include localhost SOCKS5 in the chain
-			p.logger.Error().Err(err).Msgf("%s Unable to connect to %s", ctl, pr.Address)
-			failed++
-			continue
-		} else {
-			if conn != nil {
-				conn.Close()
-			}
-			p.availProxyList = append(p.availProxyList, proxyEntry{Address: pr.Address, Username: pr.Username, Password: pr.Password})
-			break
-		}
-	}
-	if failed == len(p.proxylist) {
-		p.logger.Error().Err(err).Msgf("%s No SOCKS5 Proxy available", ctl)
-		return
-	}
-	currentDialer := dialer
-	for _, pr := range p.proxylist[failed+1:] {
-		auth := proxy.Auth{
-			User:     pr.Username,
-			Password: pr.Password,
-		}
-		dialer, err = proxy.SOCKS5("tcp", pr.Address, &auth, currentDialer)
-		if err != nil {
-			p.logger.Error().Err(err).Msgf("%s Unable to create SOCKS5 dialer %s", ctl, pr.Address)
-			continue
-		}
-		// https://github.com/golang/go/issues/37549#issuecomment-1178745487
-		ctx, cancel := context.WithTimeout(context.Background(), hopTimeout)
-		defer cancel()
-		conn, err := dialer.(proxy.ContextDialer).DialContext(ctx, "tcp", pr.Address)
-		if err != nil {
-			p.logger.Error().Err(err).Msgf("%s Unable to connect to %s", ctl, pr.Address)
-			continue
-		}
-		conn.Close()
-		currentDialer = dialer
-		p.availProxyList = append(p.availProxyList, proxyEntry{Address: pr.Address, Username: pr.Username, Password: pr.Password})
-	}
-	p.logger.Debug().Msgf("%s Available SOCKS5 Proxy [%d/%d]: %s", ctl,
-		len(p.availProxyList), len(p.proxylist), p.printProxyChain(p.availProxyList))
-}
-
-// https://www.calhoun.io/how-to-shuffle-arrays-and-slices-in-go/
-func shuffle(vals []proxyEntry) {
-	r := rand.New(rand.NewSource(time.Now().Unix()))
-	for len(vals) > 0 {
-		n := len(vals)
-		randIndex := r.Intn(n)
-		vals[n-1], vals[randIndex] = vals[randIndex], vals[n-1]
-		vals = vals[:n-1]
-	}
-}
-
-func (p *proxyapp) getSocks() (proxy.Dialer, *http.Client, error) {
-	if p.proxylist == nil {
-		return p.sockDialer, p.sockClient, nil
-	}
-	p.mu.RLock()
-	defer p.mu.RUnlock()
-	chainType := p.proxychain.Type
-	var ctl string
-	if p.nocolor {
-		ctl = colors.WrapBrackets(chainType)
-	} else {
-		ctl = colors.WrapBrackets(colors.LightBlueBg(chainType).String())
-	}
-	if len(p.availProxyList) == 0 {
-		p.logger.Error().Msgf("%s No SOCKS5 Proxy available", ctl)
-		return nil, nil, fmt.Errorf("no socks5 proxy available")
-	}
-	var chainLength int
-	if p.proxychain.Length > len(p.availProxyList) || p.proxychain.Length <= 0 {
-		chainLength = len(p.availProxyList)
-	} else {
-		chainLength = p.proxychain.Length
-	}
-	copyProxyList := make([]proxyEntry, 0, len(p.availProxyList))
-	switch chainType {
-	case "strict", "dynamic":
-		copyProxyList = p.availProxyList
-	case "random":
-		copyProxyList = append(copyProxyList, p.availProxyList...)
-		shuffle(copyProxyList)
-		copyProxyList = copyProxyList[:chainLength]
-	case "round_robin":
-		var start uint32
-		for {
-			start = atomic.LoadUint32(&p.rrIndex)
-			next := start + 1
-			if start >= p.rrIndexReset {
-				p.logger.Debug().Msg("Resetting round robin index")
-				next = 0
-			}
-			if atomic.CompareAndSwapUint32(&p.rrIndex, start, next) {
-				break
-			}
-		}
-		startIdx := int(start % uint32(len(p.availProxyList)))
-		for i := range chainLength {
-			idx := (startIdx + i) % len(p.availProxyList)
-			copyProxyList = append(copyProxyList, p.availProxyList[idx])
-		}
-	default:
-		p.logger.Fatal().Msg("Unreachable")
-	}
-	if len(copyProxyList) == 0 {
-		p.logger.Error().Msgf("%s No SOCKS5 Proxy available", ctl)
-		return nil, nil, fmt.Errorf("no socks5 proxy available")
-	}
-	if p.proxychain.Type == "strict" && len(copyProxyList) != len(p.proxylist) {
-		p.logger.Error().Msgf("%s Not all SOCKS5 Proxy available", ctl)
-		return nil, nil, fmt.Errorf("not all socks5 proxy available")
-	}
-	var dialer proxy.Dialer = &net.Dialer{Timeout: timeout}
-	var err error
-	for _, pr := range copyProxyList {
-		auth := proxy.Auth{
-			User:     pr.Username,
-			Password: pr.Password,
-		}
-		dialer, err = proxy.SOCKS5("tcp", pr.Address, &auth, dialer)
-		if err != nil {
-			p.logger.Error().Err(err).Msgf("%s Unable to create SOCKS5 dialer %s", ctl, pr.Address)
-			return nil, nil, err
-		}
-	}
-	socks := &http.Client{
-		Transport: &http.Transport{
-			Dial: dialer.Dial,
-		},
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			return http.ErrUseLastResponse
-		},
-	}
-	p.logger.Debug().Msgf("%s Request chain: %s", ctl, p.printProxyChain(copyProxyList))
-	return dialer, socks, nil
-}
-
-func (p *proxyapp) doReq(w http.ResponseWriter, r *http.Request, sock *http.Client) *http.Response {
-	var (
-		resp   *http.Response
-		err    error
-		msg    string
-		client *http.Client
-	)
-	if sock != nil {
-		client = sock
-		msg = "Connection to SOCKS5 server failed"
-	} else {
-		client = p.httpClient
-		msg = "Connection failed"
-	}
-	resp, err = client.Do(r)
-	if err != nil {
-		p.logger.Error().Err(err).Msg(msg)
-		w.WriteHeader(http.StatusServiceUnavailable)
-		return nil
-	}
-	if resp == nil {
-		p.logger.Error().Msg(msg)
-		w.WriteHeader(http.StatusServiceUnavailable)
-		return nil
-	}
-	return resp
+var rColors = []func(string) *colors.Color{
+	colors.Beige,
+	colors.Blue,
+	colors.Gray,
+	colors.Green,
+	colors.LightBlue,
+	colors.Magenta,
+	colors.Red,
+	colors.Yellow,
+	colors.BeigeBg,
+	colors.BlueBg,
+	colors.GrayBg,
+	colors.GreenBg,
+	colors.LightBlueBg,
+	colors.MagentaBg,
+	colors.RedBgDark,
+	colors.YellowBg,
 }
 
 func randColor() func(string) *colors.Color {
@@ -613,6 +370,350 @@ func (p *proxyapp) colorizeTimestamp() string {
 		return colors.WrapBrackets(ts.Format(time.TimeOnly))
 	}
 	return colors.GrayBg(colors.WrapBrackets(ts.Format(time.TimeOnly))).String()
+}
+
+func (p *proxyapp) colorizeTunnel(req, resp layers.Layer, sniffheader *[]string, id string) error {
+	switch reqt := req.(type) {
+	case *layers.HTTPMessage:
+		var reqBodySaved, respBodySaved []byte
+		rest := resp.(*layers.HTTPMessage)
+		if p.body {
+			reqBodySaved, _ = io.ReadAll(reqt.Request.Body)
+			respBodySaved, _ = io.ReadAll(rest.Response.Body)
+			reqBodySaved = bytes.Trim(reqBodySaved, "\r\n\t ")
+			respBodySaved = bytes.Trim(respBodySaved, "\r\n\t ")
+		}
+		if p.json {
+			j1, err := json.Marshal(reqt)
+			if err != nil {
+				return err
+			}
+			j2, err := json.Marshal(rest)
+			if err != nil {
+				return err
+			}
+			*sniffheader = append(*sniffheader, string(j1), string(j2))
+			if p.body && len(reqBodySaved) > 0 {
+				*sniffheader = append(*sniffheader, fmt.Sprintf("{\"req_body\":%s}", reqBodySaved))
+			}
+			if p.body && len(respBodySaved) > 0 {
+				*sniffheader = append(*sniffheader, fmt.Sprintf("{\"resp_body\":%s}", respBodySaved))
+			}
+		} else {
+			*sniffheader = append(*sniffheader, p.colorizeHTTP(reqt.Request, rest.Response, &reqBodySaved, &respBodySaved, id, true))
+		}
+	case *layers.TLSMessage:
+		var chs *layers.TLSClientHello
+		var shs *layers.TLSServerHello
+		if len(reqt.Records) > 0 {
+			hsrec := reqt.Records[0]
+			if hsrec.ContentType == layers.HandshakeTLSVal { // TODO: add more cases, parse all records
+				switch parser := layers.HSTLSParserByType(hsrec.Data[0]).(type) {
+				case *layers.TLSClientHello:
+					err := parser.ParseHS(hsrec.Data)
+					if err != nil {
+						return err
+					}
+					chs = parser
+				}
+			}
+		}
+		rest := resp.(*layers.TLSMessage)
+		if len(rest.Records) > 0 {
+			hsrec := rest.Records[0]
+			if hsrec.ContentType == layers.HandshakeTLSVal {
+				switch parser := layers.HSTLSParserByType(hsrec.Data[0]).(type) {
+				case *layers.TLSServerHello:
+					err := parser.ParseHS(hsrec.Data)
+					if err != nil {
+						return err
+					}
+					shs = parser
+				}
+			}
+		}
+		if chs != nil && shs != nil {
+			if p.json {
+				j1, err := json.Marshal(chs)
+				if err != nil {
+					return err
+				}
+				j2, err := json.Marshal(shs)
+				if err != nil {
+					return err
+				}
+				*sniffheader = append(*sniffheader, string(j1), string(j2))
+			} else {
+				*sniffheader = append(*sniffheader, p.colorizeTLS(chs, shs, id))
+			}
+		}
+	}
+	return nil
+}
+
+func copyHeader(dst, src http.Header) {
+	for k, vv := range src {
+		for _, v := range vv {
+			dst.Add(k, v)
+		}
+	}
+}
+
+func delHopHeaders(header http.Header) {
+	for _, h := range hopHeaders {
+		header.Del(h)
+	}
+}
+
+// delConnectionHeaders removes hop-by-hop headers listed in the "Connection" header
+// https://datatracker.ietf.org/doc/html/rfc7230#section-6.1
+func delConnectionHeaders(h http.Header) {
+	for _, f := range h["Connection"] {
+		for sf := range strings.SplitSeq(f, ",") {
+			if sf = strings.TrimSpace(sf); sf != "" {
+				h.Del(sf)
+			}
+		}
+	}
+}
+
+func appendHostToXForwardHeader(header http.Header, host string) {
+	if prior, ok := header["X-Forwarded-For"]; ok {
+		host = strings.Join(prior, ", ") + ", " + host
+	}
+	header.Set("X-Forwarded-For", host)
+}
+
+func isLocalAddress(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		host = addr
+	}
+	ip := net.ParseIP(host)
+	if ip != nil {
+		return ip.IsLoopback()
+	}
+	host = strings.ToLower(host)
+	return strings.HasSuffix(host, ".local") || host == "localhost"
+}
+
+func (p *proxyapp) printProxyChain(pc []proxyEntry) string {
+	var sb strings.Builder
+	sb.WriteString("client -> ")
+	if p.httpServerAddr != "" {
+		sb.WriteString(p.httpServerAddr)
+		if p.tproxyAddr != "" {
+			sb.WriteString(" | ")
+			sb.WriteString(p.tproxyAddr)
+			sb.WriteString(fmt.Sprintf(" (%s)", p.tproxyMode))
+		}
+	} else if p.tproxyAddr != "" {
+		sb.WriteString(p.tproxyAddr)
+		sb.WriteString(fmt.Sprintf(" (%s)", p.tproxyMode))
+	}
+	sb.WriteString(" -> ")
+	for _, pe := range pc {
+		sb.WriteString(pe.String())
+		sb.WriteString(" -> ")
+	}
+	sb.WriteString("target")
+	return sb.String()
+}
+
+func (p *proxyapp) updateSocksList() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.availProxyList = p.availProxyList[:0]
+	var base proxy.Dialer = &net.Dialer{Timeout: timeout}
+	var dialer proxy.Dialer
+	var err error
+	failed := 0
+	chainType := p.proxychain.Type
+	var ctl string
+	if p.nocolor {
+		ctl = colors.WrapBrackets(chainType)
+	} else {
+		ctl = colors.WrapBrackets(colors.LightBlueBg(chainType).String())
+	}
+	for _, pr := range p.proxylist {
+		auth := proxy.Auth{
+			User:     pr.Username,
+			Password: pr.Password,
+		}
+		dialer, err = proxy.SOCKS5("tcp", pr.Address, &auth, base)
+		if err != nil {
+			p.logger.Error().Err(err).Msgf("%s Unable to create SOCKS5 dialer %s", ctl, pr.Address)
+			failed++
+			continue
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), hopTimeout)
+		defer cancel()
+		conn, err := dialer.(proxy.ContextDialer).DialContext(ctx, "tcp", pr.Address)
+		if err != nil && !errors.Is(err, io.EOF) { // check for EOF to include localhost SOCKS5 in the chain
+			p.logger.Error().Err(err).Msgf("%s Unable to connect to %s", ctl, pr.Address)
+			failed++
+			continue
+		} else {
+			if conn != nil {
+				conn.Close()
+			}
+			p.availProxyList = append(p.availProxyList, proxyEntry{Address: pr.Address, Username: pr.Username, Password: pr.Password})
+			break
+		}
+	}
+	if failed == len(p.proxylist) {
+		p.logger.Error().Err(err).Msgf("%s No SOCKS5 Proxy available", ctl)
+		return
+	}
+	currentDialer := dialer
+	for _, pr := range p.proxylist[failed+1:] {
+		auth := proxy.Auth{
+			User:     pr.Username,
+			Password: pr.Password,
+		}
+		dialer, err = proxy.SOCKS5("tcp", pr.Address, &auth, currentDialer)
+		if err != nil {
+			p.logger.Error().Err(err).Msgf("%s Unable to create SOCKS5 dialer %s", ctl, pr.Address)
+			continue
+		}
+		// https://github.com/golang/go/issues/37549#issuecomment-1178745487
+		ctx, cancel := context.WithTimeout(context.Background(), hopTimeout)
+		defer cancel()
+		conn, err := dialer.(proxy.ContextDialer).DialContext(ctx, "tcp", pr.Address)
+		if err != nil {
+			p.logger.Error().Err(err).Msgf("%s Unable to connect to %s", ctl, pr.Address)
+			continue
+		}
+		conn.Close()
+		currentDialer = dialer
+		p.availProxyList = append(p.availProxyList, proxyEntry{Address: pr.Address, Username: pr.Username, Password: pr.Password})
+	}
+	p.logger.Debug().Msgf("%s Available SOCKS5 Proxy [%d/%d]: %s", ctl,
+		len(p.availProxyList), len(p.proxylist), p.printProxyChain(p.availProxyList))
+}
+
+// https://www.calhoun.io/how-to-shuffle-arrays-and-slices-in-go/
+func shuffle(vals []proxyEntry) {
+	r := rand.New(rand.NewSource(time.Now().Unix()))
+	for len(vals) > 0 {
+		n := len(vals)
+		randIndex := r.Intn(n)
+		vals[n-1], vals[randIndex] = vals[randIndex], vals[n-1]
+		vals = vals[:n-1]
+	}
+}
+
+func (p *proxyapp) getSocks() (proxy.Dialer, *http.Client, error) {
+	if p.proxylist == nil {
+		return p.sockDialer, p.sockClient, nil
+	}
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	chainType := p.proxychain.Type
+	var ctl string
+	if p.nocolor {
+		ctl = colors.WrapBrackets(chainType)
+	} else {
+		ctl = colors.WrapBrackets(colors.LightBlueBg(chainType).String())
+	}
+	if len(p.availProxyList) == 0 {
+		p.logger.Error().Msgf("%s No SOCKS5 Proxy available", ctl)
+		return nil, nil, fmt.Errorf("no socks5 proxy available")
+	}
+	var chainLength int
+	if p.proxychain.Length > len(p.availProxyList) || p.proxychain.Length <= 0 {
+		chainLength = len(p.availProxyList)
+	} else {
+		chainLength = p.proxychain.Length
+	}
+	copyProxyList := make([]proxyEntry, 0, len(p.availProxyList))
+	switch chainType {
+	case "strict", "dynamic":
+		copyProxyList = p.availProxyList
+	case "random":
+		copyProxyList = append(copyProxyList, p.availProxyList...)
+		shuffle(copyProxyList)
+		copyProxyList = copyProxyList[:chainLength]
+	case "round_robin":
+		var start uint32
+		for {
+			start = atomic.LoadUint32(&p.rrIndex)
+			next := start + 1
+			if start >= p.rrIndexReset {
+				p.logger.Debug().Msg("Resetting round robin index")
+				next = 0
+			}
+			if atomic.CompareAndSwapUint32(&p.rrIndex, start, next) {
+				break
+			}
+		}
+		startIdx := int(start % uint32(len(p.availProxyList)))
+		for i := range chainLength {
+			idx := (startIdx + i) % len(p.availProxyList)
+			copyProxyList = append(copyProxyList, p.availProxyList[idx])
+		}
+	default:
+		p.logger.Fatal().Msg("Unreachable")
+	}
+	if len(copyProxyList) == 0 {
+		p.logger.Error().Msgf("%s No SOCKS5 Proxy available", ctl)
+		return nil, nil, fmt.Errorf("no socks5 proxy available")
+	}
+	if p.proxychain.Type == "strict" && len(copyProxyList) != len(p.proxylist) {
+		p.logger.Error().Msgf("%s Not all SOCKS5 Proxy available", ctl)
+		return nil, nil, fmt.Errorf("not all socks5 proxy available")
+	}
+	var dialer proxy.Dialer = &net.Dialer{Timeout: timeout}
+	var err error
+	for _, pr := range copyProxyList {
+		auth := proxy.Auth{
+			User:     pr.Username,
+			Password: pr.Password,
+		}
+		dialer, err = proxy.SOCKS5("tcp", pr.Address, &auth, dialer)
+		if err != nil {
+			p.logger.Error().Err(err).Msgf("%s Unable to create SOCKS5 dialer %s", ctl, pr.Address)
+			return nil, nil, err
+		}
+	}
+	socks := &http.Client{
+		Transport: &http.Transport{
+			Dial: dialer.Dial,
+		},
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+	p.logger.Debug().Msgf("%s Request chain: %s", ctl, p.printProxyChain(copyProxyList))
+	return dialer, socks, nil
+}
+
+func (p *proxyapp) doReq(w http.ResponseWriter, r *http.Request, sock *http.Client) *http.Response {
+	var (
+		resp   *http.Response
+		err    error
+		msg    string
+		client *http.Client
+	)
+	if sock != nil {
+		client = sock
+		msg = "Connection to SOCKS5 server failed"
+	} else {
+		client = p.httpClient
+		msg = "Connection failed"
+	}
+	resp, err = client.Do(r)
+	if err != nil {
+		p.logger.Error().Err(err).Msg(msg)
+		w.WriteHeader(http.StatusServiceUnavailable)
+		return nil
+	}
+	if resp == nil {
+		p.logger.Error().Msg(msg)
+		w.WriteHeader(http.StatusServiceUnavailable)
+		return nil
+	}
+	return resp
 }
 
 func (p *proxyapp) handleForward(w http.ResponseWriter, r *http.Request) {
@@ -861,85 +962,6 @@ func (p *proxyapp) handleTunnel(w http.ResponseWriter, r *http.Request) {
 	wg.Wait()
 }
 
-func (p *proxyapp) colorizeReqResp(req, resp layers.Layer, sniffheader *[]string, id string) error {
-	switch reqt := req.(type) {
-	case *layers.HTTPMessage:
-		var reqBodySaved, respBodySaved []byte
-		rest := resp.(*layers.HTTPMessage)
-		if p.body {
-			reqBodySaved, _ = io.ReadAll(reqt.Request.Body)
-			respBodySaved, _ = io.ReadAll(rest.Response.Body)
-			reqBodySaved = bytes.Trim(reqBodySaved, "\r\n\t ")
-			respBodySaved = bytes.Trim(respBodySaved, "\r\n\t ")
-		}
-		if p.json {
-			j1, err := json.Marshal(reqt)
-			if err != nil {
-				return err
-			}
-			j2, err := json.Marshal(rest)
-			if err != nil {
-				return err
-			}
-			*sniffheader = append(*sniffheader, string(j1), string(j2))
-			if p.body && len(reqBodySaved) > 0 {
-				*sniffheader = append(*sniffheader, fmt.Sprintf("{\"req_body\":%s}", reqBodySaved))
-			}
-			if p.body && len(respBodySaved) > 0 {
-				*sniffheader = append(*sniffheader, fmt.Sprintf("{\"resp_body\":%s}", respBodySaved))
-			}
-		} else {
-			*sniffheader = append(*sniffheader, p.colorizeHTTP(reqt.Request, rest.Response, &reqBodySaved, &respBodySaved, id, true))
-		}
-	case *layers.TLSMessage:
-		var chs *layers.TLSClientHello
-		var shs *layers.TLSServerHello
-		if len(reqt.Records) > 0 {
-			hsrec := reqt.Records[0]
-			if hsrec.ContentType == layers.HandshakeTLSVal { // TODO: add more cases, parse all records
-				switch parser := layers.HSTLSParserByType(hsrec.Data[0]).(type) {
-				case *layers.TLSClientHello:
-					err := parser.ParseHS(hsrec.Data)
-					if err != nil {
-						return err
-					}
-					chs = parser
-				}
-			}
-		}
-		rest := resp.(*layers.TLSMessage)
-		if len(rest.Records) > 0 {
-			hsrec := rest.Records[0]
-			if hsrec.ContentType == layers.HandshakeTLSVal {
-				switch parser := layers.HSTLSParserByType(hsrec.Data[0]).(type) {
-				case *layers.TLSServerHello:
-					err := parser.ParseHS(hsrec.Data)
-					if err != nil {
-						return err
-					}
-					shs = parser
-				}
-			}
-		}
-		if chs != nil && shs != nil {
-			if p.json {
-				j1, err := json.Marshal(chs)
-				if err != nil {
-					return err
-				}
-				j2, err := json.Marshal(shs)
-				if err != nil {
-					return err
-				}
-				*sniffheader = append(*sniffheader, string(j1), string(j2))
-			} else {
-				*sniffheader = append(*sniffheader, p.colorizeTLS(chs, shs, id))
-			}
-		}
-	}
-	return nil
-}
-
 func (p *proxyapp) sniffreporter(wg *sync.WaitGroup, sniffheader *[]string, reqChan, respChan <-chan layers.Layer, id string) {
 	defer wg.Done()
 	sniffheaderlen := len(*sniffheader)
@@ -965,7 +987,7 @@ func (p *proxyapp) sniffreporter(wg *sync.WaitGroup, sniffheader *[]string, reqC
 			reqQueue = reqQueue[1:]
 			respQueue = respQueue[1:]
 
-			err := p.colorizeReqResp(req, resp, sniffheader, id)
+			err := p.colorizeTunnel(req, resp, sniffheader, id)
 			if err == nil {
 				if p.json {
 					p.snifflogger.Log().Msg(fmt.Sprintf("[%s]", strings.Join(*sniffheader, ",")))
@@ -1185,28 +1207,6 @@ func (p *proxyapp) Run() {
 		tproxyServer.ListenAndServe()
 	}
 	<-done
-}
-
-type Config struct {
-	AddrHTTP       string
-	AddrSOCKS      string
-	User           string
-	Pass           string
-	ServerUser     string
-	ServerPass     string
-	CertFile       string
-	KeyFile        string
-	ServerConfPath string
-	TProxy         string
-	TProxyOnly     string
-	TProxyMode     string
-	LogFilePath    string
-	Debug          bool
-	Json           bool
-	Sniff          bool
-	SniffLogFile   string
-	NoColor        bool
-	Body           bool
 }
 
 type logWriter struct {
