@@ -17,8 +17,7 @@ const (
 	addrHTTP  string = "127.0.0.1:8080"
 	tproxyOS  string = "linux"
 )
-const usagePrefix string = `                                                                  
-    _____       _    _ _____ _______ _____ 
+const usagePrefix string = `    _____       _    _ _____ _______ _____ 
   / ____|     | |  | |  __ \__   __/ ____|
  | |  __  ___ | |__| | |__) | | | | (___  
  | | |_ |/ _ \|  __  |  ___/  | |  \___ \ 

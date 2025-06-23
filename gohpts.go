@@ -269,16 +269,19 @@ func (p *proxyapp) colorizeTLS(req *layers.TLSClientHello, resp *layers.TLSServe
 		if req.Version != nil && req.Version.Desc != "" {
 			sb.WriteString(fmt.Sprintf(" Ver: %s", req.Version.Desc))
 		}
-		if req.SessionID != "" {
-			sb.WriteString(fmt.Sprintf(" SID: %s", req.SessionID))
-		}
 		if req.ALPN != nil {
 			sb.WriteString(fmt.Sprintf(" ALPN: %v", req.ALPN))
 		}
 		sb.WriteString(" -> ")
-		sb.WriteString(fmt.Sprintf("%s ", resp.TypeDesc))
+		sb.WriteString("\n")
+		sb.WriteString(fmt.Sprintf("%s ", p.colorizeTimestamp()))
+		sb.WriteString(id)
+		sb.WriteString(fmt.Sprintf(" %s ", resp.TypeDesc))
 		if resp.Length > 0 {
 			sb.WriteString(fmt.Sprintf(" Len: %d", resp.Length))
+		}
+		if resp.SessionID != "" {
+			sb.WriteString(fmt.Sprintf(" SID: %s", resp.SessionID))
 		}
 		if resp.CipherSuite != nil && resp.CipherSuite.Desc != "" {
 			sb.WriteString(fmt.Sprintf(" CS: %s", resp.CipherSuite.Desc))
@@ -302,16 +305,19 @@ func (p *proxyapp) colorizeTLS(req *layers.TLSClientHello, resp *layers.TLSServe
 		if req.Version != nil && req.Version.Desc != "" {
 			sb.WriteString(colors.GreenBg(fmt.Sprintf(" Ver: %s", req.Version.Desc)).String())
 		}
-		if req.SessionID != "" {
-			sb.WriteString(colors.Gray(fmt.Sprintf(" SID: %s", req.SessionID)).String())
-		}
 		if req.ALPN != nil {
 			sb.WriteString(colors.BlueBg(fmt.Sprintf(" ALPN: %v", req.ALPN)).String())
 		}
 		sb.WriteString(colors.MagentaBg(" -> ").String())
-		sb.WriteString(colors.LightBlue(fmt.Sprintf("%s ", resp.TypeDesc)).Bold())
+		sb.WriteString("\n")
+		sb.WriteString(fmt.Sprintf("%s ", p.colorizeTimestamp()))
+		sb.WriteString(id)
+		sb.WriteString(colors.LightBlue(fmt.Sprintf(" %s ", resp.TypeDesc)).Bold())
 		if resp.Length > 0 {
 			sb.WriteString(colors.BeigeBg(fmt.Sprintf(" Len: %d", resp.Length)).String())
+		}
+		if resp.SessionID != "" {
+			sb.WriteString(colors.Gray(fmt.Sprintf(" SID: %s", resp.SessionID)).String())
 		}
 		if resp.CipherSuite != nil && resp.CipherSuite.Desc != "" {
 			sb.WriteString(colors.Yellow(fmt.Sprintf(" CS: %s", resp.CipherSuite.Desc)).Bold())
