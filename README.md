@@ -9,8 +9,6 @@
 
 <p align="center"><img alt="MrGopher" src="resources/mr_gopher.png" height="300" />
 
-![GoHPTS - Colors example](resources/sniffing_color.png)
-
 ## Table of contents
 
 - [Introduction](#introduction)
@@ -572,7 +570,9 @@ gohpts -sniff -snifflog ~/sniff.log -j
 
 ### Colored format
 
-You can see the example of colored output in the picture at the very top. In this mode, `GoHPTS` tries to highlight import information such as TLS Handshake, HTTP metadata, something that looks line login/passwords or different types of auth and secret tokens. The output is limited comparing to JSON but way easier to read for humans.
+![GoHPTS - Colors example](resources/sniffing_color.png)
+
+You can see the example of colored output in the picture above. In this mode, `GoHPTS` tries to highlight import information such as TLS Handshake, HTTP metadata, something that looks line login/passwords or different types of auth and secret tokens. The output is limited comparing to JSON but way easier to read for humans.
 
 To run `GoHPTS` in this mode you use the following flags:
 
