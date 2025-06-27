@@ -18,6 +18,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
 	"regexp"
 	"runtime"
@@ -86,6 +87,7 @@ type Config struct {
 	TProxy         string
 	TProxyOnly     string
 	TProxyMode     string
+	Auto           bool
 	LogFilePath    string
 	Debug          bool
 	Json           bool
@@ -107,6 +109,7 @@ type proxyapp struct {
 	httpServerAddr string
 	tproxyAddr     string
 	tproxyMode     string
+	auto           bool
 	user           string
 	pass           string
 	proxychain     chain
@@ -1143,6 +1146,87 @@ func (p *proxyapp) handler() http.HandlerFunc {
 	}
 }
 
+func (p *proxyapp) applyRedirectRules() string {
+	_, tproxyPort, _ := net.SplitHostPort(p.tproxyAddr)
+	cmd1 := exec.Command("bash", "-c", fmt.Sprintf(`
+    set -ex
+    iptables -t nat -N GOHPTS 2>/dev/null 
+    iptables -t nat -F GOHPTS 
+     
+    iptables -t nat -A GOHPTS -d 127.0.0.0/8 -j RETURN 
+    iptables -t nat -A GOHPTS -p tcp --dport %s -j RETURN
+    iptables -t nat -A GOHPTS -p tcp --dport 22 -j RETURN
+    `, tproxyPort))
+	cmd1.Stdout = os.Stdout
+	cmd1.Stderr = os.Stderr
+	if err := cmd1.Run(); err != nil {
+		p.logger.Fatal().Err(err).Msg("Failed while configuring iptables. Are you root?")
+	}
+	if p.httpServerAddr != "" {
+		_, httpPort, _ := net.SplitHostPort(p.httpServerAddr)
+		cmd2 := exec.Command("bash", "-c", fmt.Sprintf(`
+        set -ex
+        iptables -t nat -A GOHPTS -p tcp --dport %s -j RETURN
+        `, httpPort))
+		cmd2.Stdout = os.Stdout
+		cmd2.Stderr = os.Stderr
+		if err := cmd2.Run(); err != nil {
+			p.logger.Fatal().Err(err).Msg("Failed while configuring iptables. Are you root?")
+		}
+	}
+	cmd3 := exec.Command("bash", "-c", fmt.Sprintf(`
+    set -ex
+    if command -v docker >/dev/null 2>&1
+    then
+        for subnet in $(docker network inspect $(docker network ls -q) --format '{{range .IPAM.Config}}{{.Subnet}}{{end}}'); do
+          iptables -t nat -A GOHPTS -d "$subnet" -j RETURN
+        done
+    fi 
+
+    iptables -t nat -A GOHPTS -p tcp -j REDIRECT --to-ports %s
+
+    iptables -t nat -C PREROUTING -p tcp -j GOHPTS 2>/dev/null || \
+    iptables -t nat -A PREROUTING -p tcp -j GOHPTS
+
+    iptables -t nat -C OUTPUT -p tcp -j GOHPTS 2>/dev/null || \
+    iptables -t nat -A OUTPUT -p tcp -j GOHPTS
+    `, tproxyPort))
+	cmd3.Stdout = os.Stdout
+	cmd3.Stderr = os.Stderr
+	if err := cmd3.Run(); err != nil {
+		p.logger.Fatal().Err(err).Msg("Failed while configuring iptables. Are you root?")
+	}
+	cmd4 := exec.Command("bash", "-c", `
+    cat /proc/sys/net/ipv4/ip_forward
+    `)
+	output, err := cmd4.CombinedOutput()
+	if err != nil {
+		p.logger.Fatal().Err(err).Msg("Failed while configuring iptables. Are you root?")
+	}
+	cmd5 := exec.Command("bash", "-c", `
+    set -ex
+    sysctl -w net.ipv4.ip_forward=1
+    `)
+	cmd5.Stdout = os.Stdout
+	cmd5.Stderr = os.Stderr
+	_ = cmd5.Run()
+	return string(output)
+}
+
+func (p *proxyapp) clearRedirectRules(output string) error {
+	cmd := exec.Command("bash", "-c", fmt.Sprintf(`
+    set -ex
+    sysctl -w net.ipv4.ip_forward=%s || true
+    iptables -t nat -D PREROUTING -p tcp -j GOHPTS 2>/dev/null || true
+    iptables -t nat -D OUTPUT -p tcp -j GOHPTS 2>/dev/null || true
+    iptables -t nat -F GOHPTS 2>/dev/null || true
+    iptables -t nat -X GOHPTS 2>/dev/null || true
+    `, output))
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
 func (p *proxyapp) Run() {
 	done := make(chan bool)
 	quit := make(chan os.Signal, 1)
@@ -1150,6 +1234,10 @@ func (p *proxyapp) Run() {
 	var tproxyServer *tproxyServer
 	if p.tproxyAddr != "" {
 		tproxyServer = newTproxyServer(p)
+	}
+	var output string
+	if p.auto {
+		output = p.applyRedirectRules()
 	}
 	if p.proxylist != nil {
 		chainType := p.proxychain.Type
@@ -1170,6 +1258,12 @@ func (p *proxyapp) Run() {
 	if p.httpServer != nil {
 		go func() {
 			<-quit
+			if p.auto {
+				err := p.clearRedirectRules(output)
+				if err != nil {
+					p.logger.Error().Err(err).Msg("Failed clearing iptables rules")
+				}
+			}
 			if tproxyServer != nil {
 				p.logger.Info().Msg("[tproxy] Server is shutting down...")
 				tproxyServer.Shutdown()
@@ -1205,6 +1299,12 @@ func (p *proxyapp) Run() {
 	} else {
 		go func() {
 			<-quit
+			if p.auto {
+				err := p.clearRedirectRules(output)
+				if err != nil {
+					p.logger.Error().Err(err).Msg("Failed clearing iptables rules")
+				}
+			}
 			p.logger.Info().Msg("[tproxy] Server is shutting down...")
 			tproxyServer.Shutdown()
 			close(done)
@@ -1259,20 +1359,26 @@ type serverConfig struct {
 	Server    server       `yaml:"server"`
 }
 
-func getFullAddress(v string) string {
+func getFullAddress(v string) (string, error) {
 	if v == "" {
-		return ""
+		return "", nil
 	}
-	var addr string
-	i, err := strconv.Atoi(v)
-	if err == nil {
-		addr = fmt.Sprintf("127.0.0.1:%d", i)
-	} else if strings.HasPrefix(v, ":") {
-		addr = fmt.Sprintf("127.0.0.1%s", v)
-	} else {
-		addr = v
+	if i, err := strconv.Atoi(v); err == nil {
+		return fmt.Sprintf("127.0.0.1:%d", i), nil
 	}
-	return addr
+	host, port, err := net.SplitHostPort(v)
+	if err != nil {
+		return "", err
+	}
+	if host != "" && port == "" {
+		return "", fmt.Errorf("port is missing")
+	}
+	if host != "" && port != "" {
+		return v, nil
+	} else if port != "" {
+		return fmt.Sprintf("127.0.0.1:%s", port), nil
+	}
+	return "", fmt.Errorf("failed parsing address")
 }
 
 func expandPath(p string) string {
@@ -1290,6 +1396,7 @@ func New(conf *Config) *proxyapp {
 	var p proxyapp
 	var logfile *os.File = os.Stdout
 	var snifflog *os.File
+	var err error
 	p.sniff = conf.Sniff
 	p.body = conf.Body
 	p.json = conf.Json
@@ -1418,9 +1525,19 @@ func New(conf *Config) *proxyapp {
 	p.tproxyMode = conf.TProxyMode
 	tproxyonly := conf.TProxyOnly != ""
 	if tproxyonly {
-		p.tproxyAddr = getFullAddress(conf.TProxyOnly)
+		p.tproxyAddr, err = getFullAddress(conf.TProxyOnly)
+		if err != nil {
+			p.logger.Fatal().Msg("")
+		}
 	} else {
-		p.tproxyAddr = getFullAddress(conf.TProxy)
+		p.tproxyAddr, err = getFullAddress(conf.TProxy)
+		if err != nil {
+			p.logger.Fatal().Msg("")
+		}
+	}
+	p.auto = conf.Auto
+	if p.auto && p.tproxyMode != "" && p.tproxyMode != "redirect" {
+		p.logger.Fatal().Msg("Auto setup is available only for redirect mode")
 	}
 	var addrHTTP, addrSOCKS, certFile, keyFile string
 	if conf.ServerConfPath != "" {
@@ -1437,7 +1554,10 @@ func New(conf *Config) *proxyapp {
 			if sconf.Server.Address == "" {
 				p.logger.Fatal().Err(err).Msg("[server config] Server address is empty")
 			}
-			addrHTTP = getFullAddress(sconf.Server.Address)
+			addrHTTP, err = getFullAddress(sconf.Server.Address)
+			if err != nil {
+				p.logger.Fatal().Msg("")
+			}
 			p.httpServerAddr = addrHTTP
 			certFile = expandPath(sconf.Server.CertFile)
 			keyFile = expandPath(sconf.Server.KeyFile)
@@ -1452,7 +1572,10 @@ func New(conf *Config) *proxyapp {
 		}
 		seen := make(map[string]struct{})
 		for idx, pr := range p.proxylist {
-			addr := getFullAddress(pr.Address)
+			addr, err := getFullAddress(pr.Address)
+			if err != nil {
+				p.logger.Fatal().Msg("")
+			}
 			if _, ok := seen[addr]; !ok {
 				seen[addr] = struct{}{}
 				p.proxylist[idx].Address = addr
@@ -1468,14 +1591,20 @@ func New(conf *Config) *proxyapp {
 		p.rrIndexReset = rrIndexMax
 	} else {
 		if !tproxyonly {
-			addrHTTP = getFullAddress(conf.AddrHTTP)
+			addrHTTP, err = getFullAddress(conf.AddrHTTP)
+			if err != nil {
+				p.logger.Fatal().Msg("")
+			}
 			p.httpServerAddr = addrHTTP
 			certFile = expandPath(conf.CertFile)
 			keyFile = expandPath(conf.KeyFile)
 			p.user = conf.ServerUser
 			p.pass = conf.ServerPass
 		}
-		addrSOCKS = getFullAddress(conf.AddrSOCKS)
+		addrSOCKS, err = getFullAddress(conf.AddrSOCKS)
+		if err != nil {
+			p.logger.Fatal().Msg("")
+		}
 		auth := proxy.Auth{
 			User:     conf.User,
 			Password: conf.Pass,

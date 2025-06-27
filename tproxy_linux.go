@@ -54,7 +54,7 @@ func newTproxyServer(pa *proxyapp) *tproxyServer {
 	if err != nil {
 		var msg string
 		if errors.Is(err, unix.EPERM) {
-			msg = "try `sudo setcap 'cap_net_admin+ep` for the binary:"
+			msg = "try `sudo setcap 'cap_net_admin+ep` for the binary or run with sudo:"
 		}
 		ts.pa.logger.Fatal().Err(err).Msg(msg)
 	}
