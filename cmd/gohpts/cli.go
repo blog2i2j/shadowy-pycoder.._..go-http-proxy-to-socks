@@ -54,6 +54,7 @@ func root(args []string) error {
 			conf.TProxyMode = flagValue
 			return nil
 		})
+		flags.BoolVar(&conf.Auto, "auto", false, "Automatically setup iptables for transparent proxy (requires elevated privileges)")
 	}
 	flags.StringVar(&conf.LogFilePath, "logfile", "", "Log file path (Default: stdout)")
 	flags.BoolVar(&conf.Debug, "d", false, "Show logs in DEBUG mode")
@@ -99,6 +100,14 @@ func root(args []string) error {
 	if seen["M"] {
 		if !seen["t"] && !seen["T"] {
 			return fmt.Errorf("transparent proxy mode requires -t or -T flag")
+		}
+	}
+	if seen["auto"] {
+		if !seen["t"] && !seen["T"] {
+			return fmt.Errorf("-auto requires -t or -T flag")
+		}
+		if conf.TProxyMode != "redirect" {
+			return fmt.Errorf("-auto is available only for -M redirect")
 		}
 	}
 	if seen["f"] {

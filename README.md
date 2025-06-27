@@ -97,7 +97,7 @@ You can download the binary for your platform from [Releases](https://github.com
 Example:
 
 ```shell
-HPTS_RELEASE=v1.8.0; wget -v https://github.com/shadowy-pycoder/go-http-proxy-to-socks/releases/download/$HPTS_RELEASE/gohpts-$HPTS_RELEASE-linux-amd64.tar.gz -O gohpts && tar xvzf gohpts && mv -f gohpts-$HPTS_RELEASE-linux-amd64 gohpts && ./gohpts -h
+HPTS_RELEASE=v1.8.1; wget -v https://github.com/shadowy-pycoder/go-http-proxy-to-socks/releases/download/$HPTS_RELEASE/gohpts-$HPTS_RELEASE-linux-amd64.tar.gz -O gohpts && tar xvzf gohpts && mv -f gohpts-$HPTS_RELEASE-linux-amd64 gohpts && ./gohpts -h
 ```
 
 Alternatively, you can install it using `go install` command (requires Go [1.24](https://go.dev/doc/install) or later):
@@ -143,6 +143,8 @@ Options:
         Address of transparent proxy server (no HTTP)
   -U string
         User for HTTP proxy (basic auth). This flag invokes prompt for password (not echoed to terminal)
+  -auto
+        Automatically setup iptables for transparent proxy (requires elevated privileges)
   -body
         Collect request and response body for HTTP sniffing
   -c string
@@ -374,6 +376,16 @@ iptables -t nat -D OUTPUT -p tcp -j GOHPTS
 iptables -t nat -F GOHPTS
 iptables -t nat -X GOHPTS
 ```
+
+### Auto configuration for `redirect` mode
+
+To configure your system automatically, run the following command:
+
+```shell
+sudo env PATH=$PATH gohpts -d -T 8888 -M redirect -auto
+```
+
+Please note, automatic configuration requires `sudo` and is very generic, which might not be suitable for your needs.
 
 ## `tproxy` (via _MANGLE_ and _IP_TRANSPARENT_)
 
