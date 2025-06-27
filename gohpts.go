@@ -1147,6 +1147,18 @@ func (p *proxyapp) handler() http.HandlerFunc {
 }
 
 func (p *proxyapp) applyRedirectRules() string {
+	cmd0 := exec.Command("bash", "-c", `
+    set -ex
+    iptables -t nat -D PREROUTING -p tcp -j GOHPTS 2>/dev/null || true
+    iptables -t nat -D OUTPUT -p tcp -j GOHPTS 2>/dev/null || true
+    iptables -t nat -F GOHPTS 2>/dev/null || true
+    iptables -t nat -X GOHPTS 2>/dev/null || true
+    `)
+	cmd0.Stdout = os.Stdout
+	cmd0.Stderr = os.Stderr
+	if err := cmd0.Run(); err != nil {
+		p.logger.Fatal().Err(err).Msg("Failed while configuring iptables. Are you root?")
+	}
 	_, tproxyPort, _ := net.SplitHostPort(p.tproxyAddr)
 	cmd1 := exec.Command("bash", "-c", fmt.Sprintf(`
     set -ex
@@ -1216,11 +1228,11 @@ func (p *proxyapp) applyRedirectRules() string {
 func (p *proxyapp) clearRedirectRules(output string) error {
 	cmd := exec.Command("bash", "-c", fmt.Sprintf(`
     set -ex
-    sysctl -w net.ipv4.ip_forward=%s || true
     iptables -t nat -D PREROUTING -p tcp -j GOHPTS 2>/dev/null || true
     iptables -t nat -D OUTPUT -p tcp -j GOHPTS 2>/dev/null || true
     iptables -t nat -F GOHPTS 2>/dev/null || true
     iptables -t nat -X GOHPTS 2>/dev/null || true
+    sysctl -w net.ipv4.ip_forward=%s
     `, output))
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -1527,12 +1539,12 @@ func New(conf *Config) *proxyapp {
 	if tproxyonly {
 		p.tproxyAddr, err = getFullAddress(conf.TProxyOnly)
 		if err != nil {
-			p.logger.Fatal().Msg("")
+			p.logger.Fatal().Err(err).Msg("")
 		}
 	} else {
 		p.tproxyAddr, err = getFullAddress(conf.TProxy)
 		if err != nil {
-			p.logger.Fatal().Msg("")
+			p.logger.Fatal().Err(err).Msg("")
 		}
 	}
 	p.auto = conf.Auto
@@ -1556,7 +1568,7 @@ func New(conf *Config) *proxyapp {
 			}
 			addrHTTP, err = getFullAddress(sconf.Server.Address)
 			if err != nil {
-				p.logger.Fatal().Msg("")
+				p.logger.Fatal().Err(err).Msg("")
 			}
 			p.httpServerAddr = addrHTTP
 			certFile = expandPath(sconf.Server.CertFile)
@@ -1574,7 +1586,7 @@ func New(conf *Config) *proxyapp {
 		for idx, pr := range p.proxylist {
 			addr, err := getFullAddress(pr.Address)
 			if err != nil {
-				p.logger.Fatal().Msg("")
+				p.logger.Fatal().Err(err).Msg("")
 			}
 			if _, ok := seen[addr]; !ok {
 				seen[addr] = struct{}{}
@@ -1593,7 +1605,7 @@ func New(conf *Config) *proxyapp {
 		if !tproxyonly {
 			addrHTTP, err = getFullAddress(conf.AddrHTTP)
 			if err != nil {
-				p.logger.Fatal().Msg("")
+				p.logger.Fatal().Err(err).Msg("")
 			}
 			p.httpServerAddr = addrHTTP
 			certFile = expandPath(conf.CertFile)
@@ -1603,7 +1615,7 @@ func New(conf *Config) *proxyapp {
 		}
 		addrSOCKS, err = getFullAddress(conf.AddrSOCKS)
 		if err != nil {
-			p.logger.Fatal().Msg("")
+			p.logger.Fatal().Err(err).Msg("")
 		}
 		auth := proxy.Auth{
 			User:     conf.User,
