@@ -44,7 +44,6 @@ const (
 	hopTimeout               time.Duration = 3 * time.Second
 	flushTimeout             time.Duration = 10 * time.Millisecond
 	availProxyUpdateInterval time.Duration = 30 * time.Second
-	kbSize                   int64         = 1000
 	rrIndexMax               uint32        = 1_000_000
 	maxBodySize              int64         = 2 << 15
 )
@@ -120,6 +119,7 @@ type proxyapp struct {
 	nocolor        bool
 	body           bool
 	json           bool
+	closeConn      chan bool
 
 	mu             sync.RWMutex
 	availProxyList []proxyEntry
@@ -457,6 +457,18 @@ func (p *proxyapp) colorizeTunnel(req, resp layers.Layer, sniffheader *[]string,
 		}
 	}
 	return nil
+}
+
+// https://stackoverflow.com/a/1094933/1333724
+func prettifyBytes(b int64) string {
+	bf := float64(b)
+	for _, unit := range []string{"", "K", "M", "G", "T", "P", "E", "Z"} {
+		if bf < 1000.0 {
+			return fmt.Sprintf("%3.1f%sB", bf, unit)
+		}
+		bf /= 1000.0
+	}
+	return fmt.Sprintf("%.1fYB", bf)
 }
 
 func copyHeader(dst, src http.Header) {
@@ -851,12 +863,7 @@ func (p *proxyapp) handleForward(w http.ResponseWriter, r *http.Request) {
 		close(done)
 		return
 	}
-	var written string
-	if n < kbSize {
-		written = fmt.Sprintf("%dB", n)
-	} else {
-		written = fmt.Sprintf("%dKB", n/kbSize)
-	}
+	written := prettifyBytes(n)
 	if chunked {
 		written = fmt.Sprintf("%s - chunked", written)
 	}
@@ -1023,51 +1030,57 @@ func dispatch(data []byte) (layers.Layer, error) {
 
 func (p *proxyapp) copyWithTimeout(dst net.Conn, src net.Conn, msgChan chan<- layers.Layer) (written int64, err error) {
 	buf := make([]byte, 32*1024)
+readLoop:
 	for {
-		er := src.SetReadDeadline(time.Now().Add(readTimeout))
-		if er != nil {
-			err = er
-			break
-		}
-		nr, er := src.Read(buf)
-		if nr > 0 {
-			er := dst.SetWriteDeadline(time.Now().Add(writeTimeout))
+		select {
+		case <-p.closeConn:
+			break readLoop
+		default:
+			er := src.SetReadDeadline(time.Now().Add(readTimeout))
 			if er != nil {
 				err = er
-				break
+				break readLoop
 			}
-			if p.sniff {
-				l, err := dispatch(buf[0:nr])
-				if err == nil {
-					msgChan <- l
+			nr, er := src.Read(buf)
+			if nr > 0 {
+				er := dst.SetWriteDeadline(time.Now().Add(writeTimeout))
+				if er != nil {
+					err = er
+					break readLoop
+				}
+				if p.sniff {
+					l, err := dispatch(buf[0:nr])
+					if err == nil {
+						msgChan <- l
+					}
+				}
+				nw, ew := dst.Write(buf[0:nr])
+				if nw < 0 || nr < nw {
+					nw = 0
+					if ew == nil {
+						ew = errInvalidWrite
+					}
+				}
+				written += int64(nw)
+				if ew != nil {
+					if ne, ok := ew.(net.Error); ok && ne.Timeout() {
+						err = ne
+						break readLoop
+					}
+				}
+				if nr != nw {
+					err = io.ErrShortWrite
+					break readLoop
 				}
 			}
-			nw, ew := dst.Write(buf[0:nr])
-			if nw < 0 || nr < nw {
-				nw = 0
-				if ew == nil {
-					ew = errInvalidWrite
+			if er != nil {
+				if ne, ok := err.(net.Error); ok && ne.Timeout() {
+					err = er
+					break readLoop
 				}
-			}
-			written += int64(nw)
-			if ew != nil {
-				if ne, ok := ew.(net.Error); ok && ne.Timeout() {
-					err = ne
-					break
+				if er == io.EOF {
+					break readLoop
 				}
-			}
-			if nr != nw {
-				err = io.ErrShortWrite
-				break
-			}
-		}
-		if er != nil {
-			if ne, ok := err.(net.Error); ok && ne.Timeout() {
-				err = er
-				break
-			}
-			if er == io.EOF {
-				break
 			}
 		}
 	}
@@ -1083,13 +1096,7 @@ func (p *proxyapp) transfer(wg *sync.WaitGroup, dst net.Conn, src net.Conn, dest
 	if err != nil {
 		p.logger.Error().Err(err).Msgf("Error during copy from %s to %s: %v", srcName, destName, err)
 	}
-	var written string
-	if n < kbSize {
-		written = fmt.Sprintf("%dB", n)
-	} else {
-		written = fmt.Sprintf("%dKB", n/kbSize)
-	}
-	p.logger.Debug().Msgf("copied %s from %s to %s", written, srcName, destName)
+	p.logger.Debug().Msgf("copied %s from %s to %s", prettifyBytes(n), srcName, destName)
 }
 
 func parseProxyAuth(auth string) (username, password string, ok bool) {
@@ -1242,6 +1249,7 @@ func (p *proxyapp) clearRedirectRules(output string) error {
 func (p *proxyapp) Run() {
 	done := make(chan bool)
 	quit := make(chan os.Signal, 1)
+	p.closeConn = make(chan bool)
 	signal.Notify(quit, os.Interrupt)
 	var tproxyServer *tproxyServer
 	if p.tproxyAddr != "" {
@@ -1276,6 +1284,7 @@ func (p *proxyapp) Run() {
 					p.logger.Error().Err(err).Msg("Failed clearing iptables rules")
 				}
 			}
+			close(p.closeConn)
 			if tproxyServer != nil {
 				p.logger.Info().Msg("[tproxy] Server is shutting down...")
 				tproxyServer.Shutdown()
@@ -1317,6 +1326,7 @@ func (p *proxyapp) Run() {
 					p.logger.Error().Err(err).Msg("Failed clearing iptables rules")
 				}
 			}
+			close(p.closeConn)
 			p.logger.Info().Msg("[tproxy] Server is shutting down...")
 			tproxyServer.Shutdown()
 			close(done)
