@@ -1181,19 +1181,33 @@ func (p *proxyapp) applyRedirectRules() string {
 	if err := cmd1.Run(); err != nil {
 		p.logger.Fatal().Err(err).Msg("Failed while configuring iptables. Are you root?")
 	}
+	if len(p.proxylist) > 0 {
+		for _, pr := range p.proxylist {
+			_, port, _ := net.SplitHostPort(pr.Address)
+			cmd2 := exec.Command("bash", "-c", fmt.Sprintf(`
+        set -ex
+        iptables -t nat -A GOHPTS -p tcp --dport %s -j RETURN
+        `, port))
+			cmd2.Stdout = os.Stdout
+			cmd2.Stderr = os.Stderr
+			if err := cmd2.Run(); err != nil {
+				p.logger.Fatal().Err(err).Msg("Failed while configuring iptables. Are you root?")
+			}
+		}
+	}
 	if p.httpServerAddr != "" {
 		_, httpPort, _ := net.SplitHostPort(p.httpServerAddr)
-		cmd2 := exec.Command("bash", "-c", fmt.Sprintf(`
+		cmd3 := exec.Command("bash", "-c", fmt.Sprintf(`
         set -ex
         iptables -t nat -A GOHPTS -p tcp --dport %s -j RETURN
         `, httpPort))
-		cmd2.Stdout = os.Stdout
-		cmd2.Stderr = os.Stderr
-		if err := cmd2.Run(); err != nil {
+		cmd3.Stdout = os.Stdout
+		cmd3.Stderr = os.Stderr
+		if err := cmd3.Run(); err != nil {
 			p.logger.Fatal().Err(err).Msg("Failed while configuring iptables. Are you root?")
 		}
 	}
-	cmd3 := exec.Command("bash", "-c", fmt.Sprintf(`
+	cmd4 := exec.Command("bash", "-c", fmt.Sprintf(`
     set -ex
     if command -v docker >/dev/null 2>&1
     then
@@ -1210,25 +1224,25 @@ func (p *proxyapp) applyRedirectRules() string {
     iptables -t nat -C OUTPUT -p tcp -j GOHPTS 2>/dev/null || \
     iptables -t nat -A OUTPUT -p tcp -j GOHPTS
     `, tproxyPort))
-	cmd3.Stdout = os.Stdout
-	cmd3.Stderr = os.Stderr
-	if err := cmd3.Run(); err != nil {
-		p.logger.Fatal().Err(err).Msg("Failed while configuring iptables. Are you root?")
-	}
-	cmd4 := exec.Command("bash", "-c", `
-    cat /proc/sys/net/ipv4/ip_forward
-    `)
-	output, err := cmd4.CombinedOutput()
-	if err != nil {
+	cmd4.Stdout = os.Stdout
+	cmd4.Stderr = os.Stderr
+	if err := cmd4.Run(); err != nil {
 		p.logger.Fatal().Err(err).Msg("Failed while configuring iptables. Are you root?")
 	}
 	cmd5 := exec.Command("bash", "-c", `
+    cat /proc/sys/net/ipv4/ip_forward
+    `)
+	output, err := cmd5.CombinedOutput()
+	if err != nil {
+		p.logger.Fatal().Err(err).Msg("Failed while configuring iptables. Are you root?")
+	}
+	cmd6 := exec.Command("bash", "-c", `
     set -ex
     sysctl -w net.ipv4.ip_forward=1
     `)
-	cmd5.Stdout = os.Stdout
-	cmd5.Stderr = os.Stderr
-	_ = cmd5.Run()
+	cmd6.Stdout = os.Stdout
+	cmd6.Stderr = os.Stderr
+	_ = cmd6.Run()
 	return string(output)
 }
 
