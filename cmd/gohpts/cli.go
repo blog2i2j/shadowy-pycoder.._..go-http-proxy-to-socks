@@ -55,6 +55,7 @@ func root(args []string) error {
 			return nil
 		})
 		flags.BoolVar(&conf.Auto, "auto", false, "Automatically setup iptables for transparent proxy (requires elevated privileges)")
+		flags.UintVar(&conf.Mark, "mark", 0, "Set the mark for each packet sent through transparent proxy")
 	}
 	flags.StringVar(&conf.LogFilePath, "logfile", "", "Log file path (Default: stdout)")
 	flags.BoolVar(&conf.Debug, "d", false, "Show logs in DEBUG mode")
@@ -108,6 +109,11 @@ func root(args []string) error {
 		}
 		if conf.TProxyMode != "redirect" {
 			return fmt.Errorf("-auto is available only for -M redirect")
+		}
+	}
+	if seen["mark"] {
+		if !seen["auto"] {
+			return fmt.Errorf("-mark requires -auto flag")
 		}
 	}
 	if seen["f"] {
