@@ -146,7 +146,7 @@ func (ts *tproxyServer) handleConnection(srcConn net.Conn) {
 		ts.pa.logger.Fatal().Msg("Unknown tproxyMode")
 	}
 	if isLocalAddress(dst) {
-		dstConn, err = net.DialTimeout("tcp", dst, timeout)
+		dstConn, err = getBaseDialer(timeout, ts.pa.mark).Dial("tcp", dst)
 		if err != nil {
 			ts.pa.logger.Error().Err(err).Msgf("[tproxy] Failed connecting to %s", dst)
 			return
@@ -223,7 +223,7 @@ func (ts *tproxyServer) Shutdown() {
 	}
 }
 
-func getBaseSockDialer(timeout time.Duration, mark uint) *net.Dialer {
+func getBaseDialer(timeout time.Duration, mark uint) *net.Dialer {
 	var dialer *net.Dialer
 	if mark > 0 {
 		dialer = &net.Dialer{

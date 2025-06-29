@@ -42,7 +42,7 @@ func (ts *tproxyServer) handleConnection(srcConn net.Conn) {
 
 func (ts *tproxyServer) Shutdown() {}
 
-func getBaseSockDialer(timeout time.Duration, mark uint) *net.Dialer {
+func getBaseDialer(timeout time.Duration, mark uint) *net.Dialer {
 	_ = mark
 	return &net.Dialer{Timeout: timeout}
 }
