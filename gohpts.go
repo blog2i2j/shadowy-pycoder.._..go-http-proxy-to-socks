@@ -44,7 +44,6 @@ const (
 	hopTimeout               time.Duration = 3 * time.Second
 	flushTimeout             time.Duration = 10 * time.Millisecond
 	availProxyUpdateInterval time.Duration = 30 * time.Second
-	kbSize                   int64         = 1000
 	rrIndexMax               uint32        = 1_000_000
 	maxBodySize              int64         = 2 << 15
 )
@@ -88,6 +87,7 @@ type Config struct {
 	TProxyOnly     string
 	TProxyMode     string
 	Auto           bool
+	Mark           uint
 	LogFilePath    string
 	Debug          bool
 	Json           bool
@@ -110,6 +110,7 @@ type proxyapp struct {
 	tproxyAddr     string
 	tproxyMode     string
 	auto           bool
+	mark           uint
 	user           string
 	pass           string
 	proxychain     chain
@@ -120,6 +121,7 @@ type proxyapp struct {
 	nocolor        bool
 	body           bool
 	json           bool
+	closeConn      chan bool
 
 	mu             sync.RWMutex
 	availProxyList []proxyEntry
@@ -459,6 +461,18 @@ func (p *proxyapp) colorizeTunnel(req, resp layers.Layer, sniffheader *[]string,
 	return nil
 }
 
+// https://stackoverflow.com/a/1094933/1333724
+func prettifyBytes(b int64) string {
+	bf := float64(b)
+	for _, unit := range []string{"", "K", "M", "G", "T", "P", "E", "Z"} {
+		if bf < 1000.0 {
+			return fmt.Sprintf("%3.1f%sB", bf, unit)
+		}
+		bf /= 1000.0
+	}
+	return fmt.Sprintf("%.1fYB", bf)
+}
+
 func copyHeader(dst, src http.Header) {
 	for k, vv := range src {
 		for _, v := range vv {
@@ -532,7 +546,7 @@ func (p *proxyapp) updateSocksList() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.availProxyList = p.availProxyList[:0]
-	var base proxy.Dialer = &net.Dialer{Timeout: timeout}
+	var base proxy.Dialer = getBaseDialer(timeout, p.mark)
 	var dialer proxy.Dialer
 	var err error
 	failed := 0
@@ -671,7 +685,7 @@ func (p *proxyapp) getSocks() (proxy.Dialer, *http.Client, error) {
 		p.logger.Error().Msgf("%s Not all SOCKS5 Proxy available", ctl)
 		return nil, nil, fmt.Errorf("not all socks5 proxy available")
 	}
-	var dialer proxy.Dialer = &net.Dialer{Timeout: timeout}
+	var dialer proxy.Dialer = getBaseDialer(timeout, p.mark)
 	var err error
 	for _, pr := range copyProxyList {
 		auth := proxy.Auth{
@@ -851,12 +865,7 @@ func (p *proxyapp) handleForward(w http.ResponseWriter, r *http.Request) {
 		close(done)
 		return
 	}
-	var written string
-	if n < kbSize {
-		written = fmt.Sprintf("%dB", n)
-	} else {
-		written = fmt.Sprintf("%dKB", n/kbSize)
-	}
+	written := prettifyBytes(n)
 	if chunked {
 		written = fmt.Sprintf("%s - chunked", written)
 	}
@@ -881,7 +890,7 @@ func (p *proxyapp) handleTunnel(w http.ResponseWriter, r *http.Request) {
 	var dstConn net.Conn
 	var err error
 	if isLocalAddress(r.Host) {
-		dstConn, err = net.DialTimeout("tcp", r.Host, timeout)
+		dstConn, err = getBaseDialer(timeout, p.mark).Dial("tcp", r.Host)
 		if err != nil {
 			p.logger.Error().Err(err).Msgf("Failed connecting to %s", r.Host)
 			http.Error(w, err.Error(), http.StatusServiceUnavailable)
@@ -1023,51 +1032,57 @@ func dispatch(data []byte) (layers.Layer, error) {
 
 func (p *proxyapp) copyWithTimeout(dst net.Conn, src net.Conn, msgChan chan<- layers.Layer) (written int64, err error) {
 	buf := make([]byte, 32*1024)
+readLoop:
 	for {
-		er := src.SetReadDeadline(time.Now().Add(readTimeout))
-		if er != nil {
-			err = er
-			break
-		}
-		nr, er := src.Read(buf)
-		if nr > 0 {
-			er := dst.SetWriteDeadline(time.Now().Add(writeTimeout))
+		select {
+		case <-p.closeConn:
+			break readLoop
+		default:
+			er := src.SetReadDeadline(time.Now().Add(readTimeout))
 			if er != nil {
 				err = er
-				break
+				break readLoop
 			}
-			if p.sniff {
-				l, err := dispatch(buf[0:nr])
-				if err == nil {
-					msgChan <- l
+			nr, er := src.Read(buf)
+			if nr > 0 {
+				er := dst.SetWriteDeadline(time.Now().Add(writeTimeout))
+				if er != nil {
+					err = er
+					break readLoop
+				}
+				if p.sniff {
+					l, err := dispatch(buf[0:nr])
+					if err == nil {
+						msgChan <- l
+					}
+				}
+				nw, ew := dst.Write(buf[0:nr])
+				if nw < 0 || nr < nw {
+					nw = 0
+					if ew == nil {
+						ew = errInvalidWrite
+					}
+				}
+				written += int64(nw)
+				if ew != nil {
+					if ne, ok := ew.(net.Error); ok && ne.Timeout() {
+						err = ne
+						break readLoop
+					}
+				}
+				if nr != nw {
+					err = io.ErrShortWrite
+					break readLoop
 				}
 			}
-			nw, ew := dst.Write(buf[0:nr])
-			if nw < 0 || nr < nw {
-				nw = 0
-				if ew == nil {
-					ew = errInvalidWrite
+			if er != nil {
+				if ne, ok := err.(net.Error); ok && ne.Timeout() {
+					err = er
+					break readLoop
 				}
-			}
-			written += int64(nw)
-			if ew != nil {
-				if ne, ok := ew.(net.Error); ok && ne.Timeout() {
-					err = ne
-					break
+				if er == io.EOF {
+					break readLoop
 				}
-			}
-			if nr != nw {
-				err = io.ErrShortWrite
-				break
-			}
-		}
-		if er != nil {
-			if ne, ok := err.(net.Error); ok && ne.Timeout() {
-				err = er
-				break
-			}
-			if er == io.EOF {
-				break
 			}
 		}
 	}
@@ -1083,13 +1098,7 @@ func (p *proxyapp) transfer(wg *sync.WaitGroup, dst net.Conn, src net.Conn, dest
 	if err != nil {
 		p.logger.Error().Err(err).Msgf("Error during copy from %s to %s: %v", srcName, destName, err)
 	}
-	var written string
-	if n < kbSize {
-		written = fmt.Sprintf("%dB", n)
-	} else {
-		written = fmt.Sprintf("%dKB", n/kbSize)
-	}
-	p.logger.Debug().Msgf("copied %s from %s to %s", written, srcName, destName)
+	p.logger.Debug().Msgf("copied %s from %s to %s", prettifyBytes(n), srcName, destName)
 }
 
 func parseProxyAuth(auth string) (username, password string, ok bool) {
@@ -1147,46 +1156,83 @@ func (p *proxyapp) handler() http.HandlerFunc {
 }
 
 func (p *proxyapp) applyRedirectRules() string {
-	cmd0 := exec.Command("bash", "-c", `
+	cmdClear := exec.Command("bash", "-c", `
     set -ex
     iptables -t nat -D PREROUTING -p tcp -j GOHPTS 2>/dev/null || true
     iptables -t nat -D OUTPUT -p tcp -j GOHPTS 2>/dev/null || true
     iptables -t nat -F GOHPTS 2>/dev/null || true
     iptables -t nat -X GOHPTS 2>/dev/null || true
     `)
-	cmd0.Stdout = os.Stdout
-	cmd0.Stderr = os.Stderr
-	if err := cmd0.Run(); err != nil {
+	cmdClear.Stdout = os.Stdout
+	cmdClear.Stderr = os.Stderr
+	if err := cmdClear.Run(); err != nil {
 		p.logger.Fatal().Err(err).Msg("Failed while configuring iptables. Are you root?")
 	}
-	_, tproxyPort, _ := net.SplitHostPort(p.tproxyAddr)
-	cmd1 := exec.Command("bash", "-c", fmt.Sprintf(`
+	cmdInit := exec.Command("bash", "-c", `
     set -ex
     iptables -t nat -N GOHPTS 2>/dev/null 
     iptables -t nat -F GOHPTS 
      
     iptables -t nat -A GOHPTS -d 127.0.0.0/8 -j RETURN 
-    iptables -t nat -A GOHPTS -p tcp --dport %s -j RETURN
     iptables -t nat -A GOHPTS -p tcp --dport 22 -j RETURN
-    `, tproxyPort))
-	cmd1.Stdout = os.Stdout
-	cmd1.Stderr = os.Stderr
-	if err := cmd1.Run(); err != nil {
+    `)
+	cmdInit.Stdout = os.Stdout
+	cmdInit.Stderr = os.Stderr
+	if err := cmdInit.Run(); err != nil {
 		p.logger.Fatal().Err(err).Msg("Failed while configuring iptables. Are you root?")
 	}
 	if p.httpServerAddr != "" {
 		_, httpPort, _ := net.SplitHostPort(p.httpServerAddr)
-		cmd2 := exec.Command("bash", "-c", fmt.Sprintf(`
-        set -ex
-        iptables -t nat -A GOHPTS -p tcp --dport %s -j RETURN
-        `, httpPort))
-		cmd2.Stdout = os.Stdout
-		cmd2.Stderr = os.Stderr
-		if err := cmd2.Run(); err != nil {
+		cmdHttp := exec.Command("bash", "-c", fmt.Sprintf(`
+            set -ex
+            iptables -t nat -A GOHPTS -p tcp --dport %s -j RETURN
+            `, httpPort))
+		cmdHttp.Stdout = os.Stdout
+		cmdHttp.Stderr = os.Stderr
+		if err := cmdHttp.Run(); err != nil {
 			p.logger.Fatal().Err(err).Msg("Failed while configuring iptables. Are you root?")
 		}
 	}
-	cmd3 := exec.Command("bash", "-c", fmt.Sprintf(`
+	_, tproxyPort, _ := net.SplitHostPort(p.tproxyAddr)
+	if p.mark > 0 {
+		cmdMark := exec.Command("bash", "-c", fmt.Sprintf(`
+        set -ex
+        iptables -t nat -A GOHPTS -p tcp -m mark --mark %d -j RETURN
+        `, p.mark))
+		cmdMark.Stdout = os.Stdout
+		cmdMark.Stderr = os.Stderr
+		if err := cmdMark.Run(); err != nil {
+			p.logger.Fatal().Err(err).Msg("Failed while configuring iptables. Are you root?")
+		}
+	} else {
+		cmd0 := exec.Command("bash", "-c", fmt.Sprintf(`
+        set -ex
+        iptables -t nat -A GOHPTS -p tcp --dport %s -j RETURN
+        `, tproxyPort))
+		cmd0.Stdout = os.Stdout
+		cmd0.Stderr = os.Stderr
+		if err := cmd0.Run(); err != nil {
+			p.logger.Fatal().Err(err).Msg("Failed while configuring iptables. Are you root?")
+		}
+		if len(p.proxylist) > 0 {
+			for _, pr := range p.proxylist {
+				_, port, _ := net.SplitHostPort(pr.Address)
+				cmd1 := exec.Command("bash", "-c", fmt.Sprintf(`
+                set -ex
+                iptables -t nat -A GOHPTS -p tcp --dport %s -j RETURN
+                `, port))
+				cmd1.Stdout = os.Stdout
+				cmd1.Stderr = os.Stderr
+				if err := cmd1.Run(); err != nil {
+					p.logger.Fatal().Err(err).Msg("Failed while configuring iptables. Are you root?")
+				}
+				if p.proxychain.Type == "strict" {
+					break
+				}
+			}
+		}
+	}
+	cmdDocker := exec.Command("bash", "-c", fmt.Sprintf(`
     set -ex
     if command -v docker >/dev/null 2>&1
     then
@@ -1203,25 +1249,25 @@ func (p *proxyapp) applyRedirectRules() string {
     iptables -t nat -C OUTPUT -p tcp -j GOHPTS 2>/dev/null || \
     iptables -t nat -A OUTPUT -p tcp -j GOHPTS
     `, tproxyPort))
-	cmd3.Stdout = os.Stdout
-	cmd3.Stderr = os.Stderr
-	if err := cmd3.Run(); err != nil {
+	cmdDocker.Stdout = os.Stdout
+	cmdDocker.Stderr = os.Stderr
+	if err := cmdDocker.Run(); err != nil {
 		p.logger.Fatal().Err(err).Msg("Failed while configuring iptables. Are you root?")
 	}
-	cmd4 := exec.Command("bash", "-c", `
+	cmdCat := exec.Command("bash", "-c", `
     cat /proc/sys/net/ipv4/ip_forward
     `)
-	output, err := cmd4.CombinedOutput()
+	output, err := cmdCat.CombinedOutput()
 	if err != nil {
 		p.logger.Fatal().Err(err).Msg("Failed while configuring iptables. Are you root?")
 	}
-	cmd5 := exec.Command("bash", "-c", `
+	cmdForward := exec.Command("bash", "-c", `
     set -ex
     sysctl -w net.ipv4.ip_forward=1
     `)
-	cmd5.Stdout = os.Stdout
-	cmd5.Stderr = os.Stderr
-	_ = cmd5.Run()
+	cmdForward.Stdout = os.Stdout
+	cmdForward.Stderr = os.Stderr
+	_ = cmdForward.Run()
 	return string(output)
 }
 
@@ -1242,6 +1288,7 @@ func (p *proxyapp) clearRedirectRules(output string) error {
 func (p *proxyapp) Run() {
 	done := make(chan bool)
 	quit := make(chan os.Signal, 1)
+	p.closeConn = make(chan bool)
 	signal.Notify(quit, os.Interrupt)
 	var tproxyServer *tproxyServer
 	if p.tproxyAddr != "" {
@@ -1276,6 +1323,7 @@ func (p *proxyapp) Run() {
 					p.logger.Error().Err(err).Msg("Failed clearing iptables rules")
 				}
 			}
+			close(p.closeConn)
 			if tproxyServer != nil {
 				p.logger.Info().Msg("[tproxy] Server is shutting down...")
 				tproxyServer.Shutdown()
@@ -1317,6 +1365,7 @@ func (p *proxyapp) Run() {
 					p.logger.Error().Err(err).Msg("Failed clearing iptables rules")
 				}
 			}
+			close(p.closeConn)
 			p.logger.Info().Msg("[tproxy] Server is shutting down...")
 			tproxyServer.Shutdown()
 			close(done)
@@ -1548,8 +1597,18 @@ func New(conf *Config) *proxyapp {
 		}
 	}
 	p.auto = conf.Auto
-	if p.auto && p.tproxyMode != "" && p.tproxyMode != "redirect" {
+	if p.auto && runtime.GOOS != "linux" {
+		p.logger.Fatal().Msg("Auto setup is available only for linux system")
+	}
+	if p.auto && p.tproxyMode != "redirect" {
 		p.logger.Fatal().Msg("Auto setup is available only for redirect mode")
+	}
+	p.mark = conf.Mark
+	if p.mark > 0 && runtime.GOOS != "linux" {
+		p.logger.Fatal().Msg("SO_MARK is available only for linux system")
+	}
+	if p.mark > 0xFFFFFFFF {
+		p.logger.Fatal().Msg("SO_MARK is out of range")
 	}
 	var addrHTTP, addrSOCKS, certFile, keyFile string
 	if conf.ServerConfPath != "" {
@@ -1621,7 +1680,7 @@ func New(conf *Config) *proxyapp {
 			User:     conf.User,
 			Password: conf.Pass,
 		}
-		dialer, err := proxy.SOCKS5("tcp", addrSOCKS, &auth, &net.Dialer{Timeout: timeout})
+		dialer, err := proxy.SOCKS5("tcp", addrSOCKS, &auth, getBaseDialer(timeout, p.mark))
 		if err != nil {
 			p.logger.Fatal().Err(err).Msg("Unable to create SOCKS5 dialer")
 		}
@@ -1661,6 +1720,7 @@ func New(conf *Config) *proxyapp {
 		p.httpClient = &http.Client{
 			Transport: &http.Transport{
 				TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+				DialContext:     getBaseDialer(timeout, p.mark).DialContext,
 			},
 			CheckRedirect: func(req *http.Request, via []*http.Request) error {
 				return http.ErrUseLastResponse
@@ -1683,7 +1743,11 @@ func New(conf *Config) *proxyapp {
 		}
 	}
 	if p.tproxyAddr != "" {
-		p.logger.Info().Msgf("TPROXY: %s", p.tproxyAddr)
+		if p.tproxyMode == "tproxy" {
+			p.logger.Info().Msgf("TPROXY: %s", p.tproxyAddr)
+		} else {
+			p.logger.Info().Msgf("REDIRECT: %s", p.tproxyAddr)
+		}
 	}
 	return &p
 }

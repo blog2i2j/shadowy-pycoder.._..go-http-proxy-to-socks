@@ -146,7 +146,7 @@ func (ts *tproxyServer) handleConnection(srcConn net.Conn) {
 		ts.pa.logger.Fatal().Msg("Unknown tproxyMode")
 	}
 	if isLocalAddress(dst) {
-		dstConn, err = net.DialTimeout("tcp", dst, timeout)
+		dstConn, err = getBaseDialer(timeout, ts.pa.mark).Dial("tcp", dst)
 		if err != nil {
 			ts.pa.logger.Error().Err(err).Msgf("[tproxy] Failed connecting to %s", dst)
 			return
@@ -221,4 +221,21 @@ func (ts *tproxyServer) Shutdown() {
 		ts.pa.logger.Error().Msg("[tproxy] Server timed out waiting for connections to finish")
 		return
 	}
+}
+
+func getBaseDialer(timeout time.Duration, mark uint) *net.Dialer {
+	var dialer *net.Dialer
+	if mark > 0 {
+		dialer = &net.Dialer{
+			Timeout: timeout,
+			Control: func(_, _ string, c syscall.RawConn) error {
+				return c.Control(func(fd uintptr) {
+					unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_MARK, int(mark))
+				})
+			},
+		}
+	} else {
+		dialer = &net.Dialer{Timeout: timeout}
+	}
+	return dialer
 }

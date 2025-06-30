@@ -7,6 +7,7 @@ import (
 	"net"
 	"sync"
 	"syscall"
+	"time"
 )
 
 type tproxyServer struct {
@@ -40,3 +41,8 @@ func (ts *tproxyServer) handleConnection(srcConn net.Conn) {
 }
 
 func (ts *tproxyServer) Shutdown() {}
+
+func getBaseDialer(timeout time.Duration, mark uint) *net.Dialer {
+	_ = mark
+	return &net.Dialer{Timeout: timeout}
+}

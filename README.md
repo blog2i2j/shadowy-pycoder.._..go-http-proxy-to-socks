@@ -97,7 +97,7 @@ You can download the binary for your platform from [Releases](https://github.com
 Example:
 
 ```shell
-HPTS_RELEASE=v1.8.1; wget -v https://github.com/shadowy-pycoder/go-http-proxy-to-socks/releases/download/$HPTS_RELEASE/gohpts-$HPTS_RELEASE-linux-amd64.tar.gz -O gohpts && tar xvzf gohpts && mv -f gohpts-$HPTS_RELEASE-linux-amd64 gohpts && ./gohpts -h
+HPTS_RELEASE=v1.8.2; wget -v https://github.com/shadowy-pycoder/go-http-proxy-to-socks/releases/download/$HPTS_RELEASE/gohpts-$HPTS_RELEASE-linux-amd64.tar.gz -O gohpts && tar xvzf gohpts && mv -f gohpts-$HPTS_RELEASE-linux-amd64 gohpts && ./gohpts -h
 ```
 
 Alternatively, you can install it using `go install` command (requires Go [1.24](https://go.dev/doc/install) or later):
@@ -159,6 +159,8 @@ Options:
         Address of HTTP proxy server (default "127.0.0.1:8080")
   -logfile string
         Log file path (Default: stdout)
+  -mark uint
+        Set the mark for each packet sent through transparent proxy
   -nocolor
         Disable colored output for logs (no effect if -j flag specified)
   -s string
@@ -386,6 +388,12 @@ sudo env PATH=$PATH gohpts -d -T 8888 -M redirect -auto
 ```
 
 Please note, automatic configuration requires `sudo` and is very generic, which might not be suitable for your needs.
+
+You can optionally specify `-mark <value>` to prevent possible proxy loops
+
+```shell
+sudo env PATH=$PATH gohpts -d -T 8888 -M redirect -auto -mark 100
+```
 
 ## `tproxy` (via _MANGLE_ and _IP_TRANSPARENT_)
 
