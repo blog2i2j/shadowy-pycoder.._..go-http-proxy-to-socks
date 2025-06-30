@@ -1743,7 +1743,11 @@ func New(conf *Config) *proxyapp {
 		}
 	}
 	if p.tproxyAddr != "" {
-		p.logger.Info().Msgf("TPROXY: %s", p.tproxyAddr)
+		if p.tproxyMode == "tproxy" {
+			p.logger.Info().Msgf("TPROXY: %s", p.tproxyAddr)
+		} else {
+			p.logger.Info().Msgf("REDIRECT: %s", p.tproxyAddr)
+		}
 	}
 	return &p
 }

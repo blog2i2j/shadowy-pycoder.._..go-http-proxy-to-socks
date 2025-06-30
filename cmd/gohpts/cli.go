@@ -112,8 +112,8 @@ func root(args []string) error {
 		}
 	}
 	if seen["mark"] {
-		if !seen["auto"] {
-			return fmt.Errorf("-mark requires -auto flag")
+		if !seen["t"] && !seen["T"] {
+			return fmt.Errorf("-mark requires -t or -T flag")
 		}
 	}
 	if seen["f"] {
