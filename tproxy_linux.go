@@ -168,7 +168,7 @@ func (ts *tproxyServer) handleConnection(srcConn net.Conn) {
 	defer dstConn.Close()
 
 	dstConnStr := fmt.Sprintf("%s->%s->%s", dstConn.LocalAddr().String(), dstConn.RemoteAddr().String(), dst)
-	srcConnStr := fmt.Sprintf("%s->%s", srcConn.LocalAddr().String(), srcConn.RemoteAddr().String())
+	srcConnStr := fmt.Sprintf("%s->%s", srcConn.RemoteAddr().String(), srcConn.LocalAddr().String())
 
 	ts.pa.logger.Debug().Msgf("[tproxy] src: %s - dst: %s", srcConnStr, dstConnStr)
 
@@ -183,16 +183,16 @@ func (ts *tproxyServer) handleConnection(srcConn net.Conn) {
 		sniffheader := make([]string, 0, 6)
 		id := ts.pa.getId()
 		if ts.pa.json {
-			sniffheader = append(sniffheader, fmt.Sprintf("{\"connection\":{\"tproxy_mode\":%s,\"src_local\":%s,\"src_remote\":%s,\"dst_local\":%s,\"dst_remote\":%s,\"original_dst\":%s}}",
-				ts.pa.tproxyMode, srcConn.LocalAddr(), srcConn.RemoteAddr(), dstConn.LocalAddr(), dstConn.RemoteAddr(), dst))
+			sniffheader = append(sniffheader, fmt.Sprintf("{\"connection\":{\"tproxy_mode\":%s,\"src_remote\":%s,\"src_local\":%s,\"dst_local\":%s,\"dst_remote\":%s,\"original_dst\":%s}}",
+				ts.pa.tproxyMode, srcConn.RemoteAddr(), srcConn.LocalAddr(), dstConn.LocalAddr(), dstConn.RemoteAddr(), dst))
 		} else {
 			var sb strings.Builder
 			if ts.pa.nocolor {
 				sb.WriteString(id)
-				sb.WriteString(fmt.Sprintf(" Src: %s->%s -> Dst: %s->%s Orig: %s", srcConn.LocalAddr(), srcConn.RemoteAddr(), dstConn.LocalAddr(), dstConn.RemoteAddr(), dst))
+				sb.WriteString(fmt.Sprintf(" Src: %s->%s -> Dst: %s->%s Orig: %s", srcConn.RemoteAddr(), srcConn.LocalAddr(), dstConn.LocalAddr(), dstConn.RemoteAddr(), dst))
 			} else {
 				sb.WriteString(id)
-				sb.WriteString(colors.Green(fmt.Sprintf(" Src: %s->%s", srcConn.LocalAddr(), srcConn.RemoteAddr())).String())
+				sb.WriteString(colors.Green(fmt.Sprintf(" Src: %s->%s", srcConn.RemoteAddr(), srcConn.LocalAddr())).String())
 				sb.WriteString(colors.Magenta(" -> ").String())
 				sb.WriteString(colors.Blue(fmt.Sprintf("Dst: %s->%s ", dstConn.LocalAddr(), dstConn.RemoteAddr())).String())
 				sb.WriteString(colors.BeigeBg(fmt.Sprintf("Orig Dst: %s", dst)).String())

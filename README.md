@@ -97,7 +97,7 @@ You can download the binary for your platform from [Releases](https://github.com
 Example:
 
 ```shell
-HPTS_RELEASE=v1.8.2; wget -v https://github.com/shadowy-pycoder/go-http-proxy-to-socks/releases/download/$HPTS_RELEASE/gohpts-$HPTS_RELEASE-linux-amd64.tar.gz -O gohpts && tar xvzf gohpts && mv -f gohpts-$HPTS_RELEASE-linux-amd64 gohpts && ./gohpts -h
+HPTS_RELEASE=v1.8.3; wget -v https://github.com/shadowy-pycoder/go-http-proxy-to-socks/releases/download/$HPTS_RELEASE/gohpts-$HPTS_RELEASE-linux-amd64.tar.gz -O gohpts && tar xvzf gohpts && mv -f gohpts-$HPTS_RELEASE-linux-amd64 gohpts && ./gohpts -h
 ```
 
 Alternatively, you can install it using `go install` command (requires Go [1.24](https://go.dev/doc/install) or later):
@@ -135,45 +135,36 @@ GitHub: https://github.com/shadowy-pycoder/go-http-proxy-to-socks
 
 Usage: gohpts [OPTIONS]
 Options:
-  -h    Show this help message and exit.
-  -D    Run as a daemon (provide -logfile to see logs)
-  -M value
-        Transparent proxy mode: [redirect tproxy]
-  -T string
-        Address of transparent proxy server (no HTTP)
-  -U string
-        User for HTTP proxy (basic auth). This flag invokes prompt for password (not echoed to terminal)
-  -auto
-        Automatically setup iptables for transparent proxy (requires elevated privileges)
-  -body
-        Collect request and response body for HTTP sniffing
-  -c string
-        Path to certificate PEM encoded file
-  -d    Show logs in DEBUG mode
-  -f string
-        Path to server configuration file in YAML format
-  -j    Show logs in JSON format
-  -k string
-        Path to private key PEM encoded file
-  -l string
-        Address of HTTP proxy server (default "127.0.0.1:8080")
-  -logfile string
-        Log file path (Default: stdout)
-  -mark uint
-        Set the mark for each packet sent through transparent proxy
-  -nocolor
-        Disable colored output for logs (no effect if -j flag specified)
-  -s string
-        Address of SOCKS5 proxy server (default "127.0.0.1:1080")
-  -sniff
-        Enable traffic sniffing for HTTP and TLS
-  -snifflog string
-        Sniffed traffic log file path (Default: the same as -logfile)
-  -t string
-        Address of transparent proxy server (it starts along with HTTP proxy server)
-  -u string
-        User for SOCKS5 proxy authentication. This flag invokes prompt for password (not echoed to terminal)
-  -v    print version
+  -h        Show this help message and exit
+  -v        Show version and build information
+  -D        Run as a daemon (provide -logfile to see logs)
+
+  Proxy:
+  -l        Address of HTTP proxy server (default "127.0.0.1:8080")
+  -s        Address of SOCKS5 proxy server (default "127.0.0.1:1080")
+  -c        Path to certificate PEM encoded file
+  -k        Path to private key PEM encoded file
+  -U        User for HTTP proxy (basic auth). This flag invokes prompt for password (not echoed to terminal)
+  -u        User for SOCKS5 proxy authentication. This flag invokes prompt for password (not echoed to terminal)
+  -f        Path to server configuration file in YAML format (overrides other proxy flags)
+
+  Logs:
+  -d        Show logs in DEBUG mode
+  -j        Show logs in JSON format
+  -logfile  Log file path (Default: stdout)
+  -nocolor  Disable colored output for logs (no effect if -j flag specified)
+
+  Sniffing:
+  -sniff    Enable traffic sniffing for HTTP and TLS
+  -snifflog Sniffed traffic log file path (Default: the same as -logfile)
+  -body     Collect request and response body for HTTP traffic (credentials, tokens, etc)
+
+  TProxy:
+  -t        Address of transparent proxy server (it starts along with HTTP proxy server)
+  -T        Address of transparent proxy server (no HTTP)
+  -M        Transparent proxy mode: (redirect, tproxy)
+  -auto     Automatically setup iptables for transparent proxy (requires elevated privileges)
+  -mark     Set mark for each packet sent through transparent proxy (Default: redirect 0, tproxy 100)
 ```
 
 ### Configuration via CLI flags
@@ -448,6 +439,44 @@ ip rule del fwmark 1 lookup 100
 ip route flush table 100
 ip netns del ns-client
 ip link del veth1
+```
+
+### Auto configuration for `tproxy` mode
+
+To configure your system automatically, run the following command (for example, on a separate VM):
+
+```shell
+ssh remote -D 1080 -Nf
+sudo env PATH=$PATH gohpts -d -T 8888 -M tproxy -auto -mark 100
+```
+
+Run the following on your host:
+
+```shell
+ip route show default > /tmp/default-route.txt
+
+ip route add 0.0.0.0/1 via 192.168.0.1 # change with ip of your VM
+ip route add 128.0.0.0/1 via 192.168.0.1
+```
+
+Test connection:
+
+```shell
+curl http://example.com #check logs on your VM
+```
+
+Undo everything:
+
+```shell
+ip route del 0.0.0.0/1 via 192.168.0.1 2>/dev/null || true
+ip route del 128.0.0.0/1 via 192.168.0.1 2>/dev/null || true
+
+if [[ -f /tmp/default-route.txt ]]; then
+    eval $(awk '{print "ip route add "$0}' /tmp/default-route.txt)
+    rm -f /tmp/default-route.txt
+else
+    echo "Something went wrong"
+fi
 ```
 
 ## Traffic sniffing

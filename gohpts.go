@@ -930,7 +930,7 @@ func (p *proxyapp) handleTunnel(w http.ResponseWriter, r *http.Request) {
 	defer srcConn.Close()
 
 	dstConnStr := fmt.Sprintf("%s->%s->%s", dstConn.LocalAddr().String(), dstConn.RemoteAddr().String(), r.Host)
-	srcConnStr := fmt.Sprintf("%s->%s", srcConn.LocalAddr().String(), srcConn.RemoteAddr().String())
+	srcConnStr := fmt.Sprintf("%s->%s", srcConn.RemoteAddr().String(), srcConn.LocalAddr().String())
 
 	p.logger.Debug().Msgf("%s - %s - %s", r.Proto, r.Method, r.Host)
 	p.logger.Debug().Msgf("src: %s - dst: %s", srcConnStr, dstConnStr)
@@ -945,8 +945,8 @@ func (p *proxyapp) handleTunnel(w http.ResponseWriter, r *http.Request) {
 		sniffheader := make([]string, 0, 6)
 		id := p.getId()
 		if p.json {
-			sniffheader = append(sniffheader, fmt.Sprintf("{\"connection\":{\"src_local\":%s,\"src_remote\":%s,\"dst_local\":%s,\"dst_remote\":%s}}",
-				srcConn.LocalAddr(), srcConn.RemoteAddr(), dstConn.LocalAddr(), dstConn.RemoteAddr()))
+			sniffheader = append(sniffheader, fmt.Sprintf("{\"connection\":{\"src_remote\":%s,\"src_local\":%s,\"dst_local\":%s,\"dst_remote\":%s}}",
+				srcConn.RemoteAddr(), srcConn.LocalAddr(), dstConn.LocalAddr(), dstConn.RemoteAddr()))
 			j, err := json.Marshal(&layers.HTTPMessage{Request: r})
 			if err == nil {
 				sniffheader = append(sniffheader, string(j))
@@ -955,14 +955,14 @@ func (p *proxyapp) handleTunnel(w http.ResponseWriter, r *http.Request) {
 			var sb strings.Builder
 			if p.nocolor {
 				sb.WriteString(id)
-				sb.WriteString(fmt.Sprintf(" Src: %s->%s -> Dst: %s->%s", srcConn.LocalAddr(), srcConn.RemoteAddr(), dstConn.LocalAddr(), dstConn.RemoteAddr()))
+				sb.WriteString(fmt.Sprintf(" Src: %s->%s -> Dst: %s->%s", srcConn.RemoteAddr(), srcConn.LocalAddr(), dstConn.LocalAddr(), dstConn.RemoteAddr()))
 				sb.WriteString("\n")
 				sb.WriteString(fmt.Sprintf("%s ", p.colorizeTimestamp()))
 				sb.WriteString(id)
 				sb.WriteString(fmt.Sprintf(" %s %s %s ", r.Method, r.Host, r.Proto))
 			} else {
 				sb.WriteString(id)
-				sb.WriteString(colors.Green(fmt.Sprintf(" Src: %s->%s", srcConn.LocalAddr(), srcConn.RemoteAddr())).String())
+				sb.WriteString(colors.Green(fmt.Sprintf(" Src: %s->%s", srcConn.RemoteAddr(), srcConn.LocalAddr())).String())
 				sb.WriteString(colors.Magenta(" -> ").String())
 				sb.WriteString(colors.Blue(fmt.Sprintf("Dst: %s->%s", dstConn.LocalAddr(), dstConn.RemoteAddr())).String())
 				sb.WriteString("\n")
@@ -1156,103 +1156,173 @@ func (p *proxyapp) handler() http.HandlerFunc {
 }
 
 func (p *proxyapp) applyRedirectRules() string {
-	cmdClear := exec.Command("bash", "-c", `
-    set -ex
-    iptables -t nat -D PREROUTING -p tcp -j GOHPTS 2>/dev/null || true
-    iptables -t nat -D OUTPUT -p tcp -j GOHPTS 2>/dev/null || true
-    iptables -t nat -F GOHPTS 2>/dev/null || true
-    iptables -t nat -X GOHPTS 2>/dev/null || true
-    `)
-	cmdClear.Stdout = os.Stdout
-	cmdClear.Stderr = os.Stderr
-	if err := cmdClear.Run(); err != nil {
-		p.logger.Fatal().Err(err).Msg("Failed while configuring iptables. Are you root?")
-	}
-	cmdInit := exec.Command("bash", "-c", `
-    set -ex
-    iptables -t nat -N GOHPTS 2>/dev/null 
-    iptables -t nat -F GOHPTS 
-     
-    iptables -t nat -A GOHPTS -d 127.0.0.0/8 -j RETURN 
-    iptables -t nat -A GOHPTS -p tcp --dport 22 -j RETURN
-    `)
-	cmdInit.Stdout = os.Stdout
-	cmdInit.Stderr = os.Stderr
-	if err := cmdInit.Run(); err != nil {
-		p.logger.Fatal().Err(err).Msg("Failed while configuring iptables. Are you root?")
-	}
-	if p.httpServerAddr != "" {
-		_, httpPort, _ := net.SplitHostPort(p.httpServerAddr)
-		cmdHttp := exec.Command("bash", "-c", fmt.Sprintf(`
+	_, tproxyPort, _ := net.SplitHostPort(p.tproxyAddr)
+	switch p.tproxyMode {
+	case "redirect":
+		cmdClear := exec.Command("bash", "-c", `
+        set -ex
+        iptables -t nat -D PREROUTING -p tcp -j GOHPTS 2>/dev/null || true
+        iptables -t nat -D OUTPUT -p tcp -j GOHPTS 2>/dev/null || true
+        iptables -t nat -F GOHPTS 2>/dev/null || true
+        iptables -t nat -X GOHPTS 2>/dev/null || true
+        `)
+		cmdClear.Stdout = os.Stdout
+		cmdClear.Stderr = os.Stderr
+		if err := cmdClear.Run(); err != nil {
+			p.logger.Fatal().Err(err).Msg("Failed while configuring iptables. Are you root?")
+		}
+		cmdInit := exec.Command("bash", "-c", `
+        set -ex
+        iptables -t nat -N GOHPTS 2>/dev/null 
+        iptables -t nat -F GOHPTS 
+         
+        iptables -t nat -A GOHPTS -d 127.0.0.0/8 -j RETURN 
+        iptables -t nat -A GOHPTS -p tcp --dport 22 -j RETURN
+        `)
+		cmdInit.Stdout = os.Stdout
+		cmdInit.Stderr = os.Stderr
+		if err := cmdInit.Run(); err != nil {
+			p.logger.Fatal().Err(err).Msg("Failed while configuring iptables. Are you root?")
+		}
+		if p.httpServerAddr != "" {
+			_, httpPort, _ := net.SplitHostPort(p.httpServerAddr)
+			cmdHttp := exec.Command("bash", "-c", fmt.Sprintf(`
             set -ex
             iptables -t nat -A GOHPTS -p tcp --dport %s -j RETURN
             `, httpPort))
-		cmdHttp.Stdout = os.Stdout
-		cmdHttp.Stderr = os.Stderr
-		if err := cmdHttp.Run(); err != nil {
-			p.logger.Fatal().Err(err).Msg("Failed while configuring iptables. Are you root?")
+			cmdHttp.Stdout = os.Stdout
+			cmdHttp.Stderr = os.Stderr
+			if err := cmdHttp.Run(); err != nil {
+				p.logger.Fatal().Err(err).Msg("Failed while configuring iptables. Are you root?")
+			}
 		}
-	}
-	_, tproxyPort, _ := net.SplitHostPort(p.tproxyAddr)
-	if p.mark > 0 {
-		cmdMark := exec.Command("bash", "-c", fmt.Sprintf(`
-        set -ex
-        iptables -t nat -A GOHPTS -p tcp -m mark --mark %d -j RETURN
-        `, p.mark))
-		cmdMark.Stdout = os.Stdout
-		cmdMark.Stderr = os.Stderr
-		if err := cmdMark.Run(); err != nil {
-			p.logger.Fatal().Err(err).Msg("Failed while configuring iptables. Are you root?")
-		}
-	} else {
-		cmd0 := exec.Command("bash", "-c", fmt.Sprintf(`
-        set -ex
-        iptables -t nat -A GOHPTS -p tcp --dport %s -j RETURN
-        `, tproxyPort))
-		cmd0.Stdout = os.Stdout
-		cmd0.Stderr = os.Stderr
-		if err := cmd0.Run(); err != nil {
-			p.logger.Fatal().Err(err).Msg("Failed while configuring iptables. Are you root?")
-		}
-		if len(p.proxylist) > 0 {
-			for _, pr := range p.proxylist {
-				_, port, _ := net.SplitHostPort(pr.Address)
-				cmd1 := exec.Command("bash", "-c", fmt.Sprintf(`
-                set -ex
-                iptables -t nat -A GOHPTS -p tcp --dport %s -j RETURN
-                `, port))
-				cmd1.Stdout = os.Stdout
-				cmd1.Stderr = os.Stderr
-				if err := cmd1.Run(); err != nil {
-					p.logger.Fatal().Err(err).Msg("Failed while configuring iptables. Are you root?")
-				}
-				if p.proxychain.Type == "strict" {
-					break
+		if p.mark > 0 {
+			cmdMark := exec.Command("bash", "-c", fmt.Sprintf(`
+            set -ex
+            iptables -t nat -A GOHPTS -p tcp -m mark --mark %d -j RETURN
+            `, p.mark))
+			cmdMark.Stdout = os.Stdout
+			cmdMark.Stderr = os.Stderr
+			if err := cmdMark.Run(); err != nil {
+				p.logger.Fatal().Err(err).Msg("Failed while configuring iptables. Are you root?")
+			}
+		} else {
+			cmd0 := exec.Command("bash", "-c", fmt.Sprintf(`
+            set -ex
+            iptables -t nat -A GOHPTS -p tcp --dport %s -j RETURN
+            `, tproxyPort))
+			cmd0.Stdout = os.Stdout
+			cmd0.Stderr = os.Stderr
+			if err := cmd0.Run(); err != nil {
+				p.logger.Fatal().Err(err).Msg("Failed while configuring iptables. Are you root?")
+			}
+			if len(p.proxylist) > 0 {
+				for _, pr := range p.proxylist {
+					_, port, _ := net.SplitHostPort(pr.Address)
+					cmd1 := exec.Command("bash", "-c", fmt.Sprintf(`
+                    set -ex
+                    iptables -t nat -A GOHPTS -p tcp --dport %s -j RETURN
+                    `, port))
+					cmd1.Stdout = os.Stdout
+					cmd1.Stderr = os.Stderr
+					if err := cmd1.Run(); err != nil {
+						p.logger.Fatal().Err(err).Msg("Failed while configuring iptables. Are you root?")
+					}
+					if p.proxychain.Type == "strict" {
+						break
+					}
 				}
 			}
 		}
-	}
-	cmdDocker := exec.Command("bash", "-c", fmt.Sprintf(`
-    set -ex
-    if command -v docker >/dev/null 2>&1
-    then
-        for subnet in $(docker network inspect $(docker network ls -q) --format '{{range .IPAM.Config}}{{.Subnet}}{{end}}'); do
-          iptables -t nat -A GOHPTS -d "$subnet" -j RETURN
-        done
-    fi 
+		cmdDocker := exec.Command("bash", "-c", fmt.Sprintf(`
+        set -ex
+        if command -v docker >/dev/null 2>&1
+        then
+            for subnet in $(docker network inspect $(docker network ls -q) --format '{{range .IPAM.Config}}{{.Subnet}}{{end}}'); do
+              iptables -t nat -A GOHPTS -d "$subnet" -j RETURN
+            done
+        fi 
 
-    iptables -t nat -A GOHPTS -p tcp -j REDIRECT --to-ports %s
+        iptables -t nat -A GOHPTS -p tcp -j REDIRECT --to-ports %s
 
-    iptables -t nat -C PREROUTING -p tcp -j GOHPTS 2>/dev/null || \
-    iptables -t nat -A PREROUTING -p tcp -j GOHPTS
+        iptables -t nat -C PREROUTING -p tcp -j GOHPTS 2>/dev/null || \
+        iptables -t nat -A PREROUTING -p tcp -j GOHPTS
 
-    iptables -t nat -C OUTPUT -p tcp -j GOHPTS 2>/dev/null || \
-    iptables -t nat -A OUTPUT -p tcp -j GOHPTS
-    `, tproxyPort))
-	cmdDocker.Stdout = os.Stdout
-	cmdDocker.Stderr = os.Stderr
-	if err := cmdDocker.Run(); err != nil {
-		p.logger.Fatal().Err(err).Msg("Failed while configuring iptables. Are you root?")
+        iptables -t nat -C OUTPUT -p tcp -j GOHPTS 2>/dev/null || \
+        iptables -t nat -A OUTPUT -p tcp -j GOHPTS
+        `, tproxyPort))
+		cmdDocker.Stdout = os.Stdout
+		cmdDocker.Stderr = os.Stderr
+		if err := cmdDocker.Run(); err != nil {
+			p.logger.Fatal().Err(err).Msg("Failed while configuring iptables. Are you root?")
+		}
+	case "tproxy":
+		cmdClear := exec.Command("bash", "-c", `
+        set -ex
+        iptables -t mangle -D PREROUTING -p tcp -m socket -j DIVERT 2>/dev/null || true
+        iptables -t mangle -D PREROUTING -p tcp -j GOHPTS 2>/dev/null || true
+        iptables -t mangle -F DIVERT 2>/dev/null || true
+        iptables -t mangle -F GOHPTS 2>/dev/null || true
+        iptables -t mangle -X DIVERT 2>/dev/null || true
+        iptables -t mangle -X GOHPTS 2>/dev/null || true
+
+        ip rule del fwmark 1 lookup 100 2>/dev/null || true
+        ip route flush table 100 || true
+        `)
+		cmdClear.Stdout = os.Stdout
+		cmdClear.Stderr = os.Stderr
+		if err := cmdClear.Run(); err != nil {
+			p.logger.Fatal().Err(err).Msg("Failed while configuring iptables. Are you root?")
+		}
+		cmdInit0 := exec.Command("bash", "-c", `
+        set -ex
+        ip rule add fwmark 1 lookup 100 2>/dev/null || true
+        ip route add local 0.0.0.0/0 dev lo table 100 2>/dev/null || true
+
+        iptables -t mangle -N DIVERT 2>/dev/null || true
+        iptables -t mangle -F DIVERT
+        iptables -t mangle -A DIVERT -j MARK --set-mark 1
+        iptables -t mangle -A DIVERT -j ACCEPT
+
+        iptables -t mangle -N GOHPTS 2>/dev/null || true
+        iptables -t mangle -F GOHPTS
+        iptables -t mangle -A GOHPTS -d 127.0.0.0/8 -j RETURN
+        iptables -t mangle -A GOHPTS -d 224.0.0.0/4 -j RETURN
+        iptables -t mangle -A GOHPTS -d 255.255.255.255/32 -j RETURN
+        `)
+		cmdInit0.Stdout = os.Stdout
+		cmdInit0.Stderr = os.Stderr
+		if err := cmdInit0.Run(); err != nil {
+			p.logger.Fatal().Err(err).Msg("Failed while configuring iptables. Are you root?")
+		}
+		cmdDocker := exec.Command("bash", "-c", `
+        set -ex
+        if command -v docker >/dev/null 2>&1
+        then
+            for subnet in $(docker network inspect $(docker network ls -q) --format '{{range .IPAM.Config}}{{.Subnet}}{{end}}'); do
+              iptables -t mangle -A GOHPTS -d "$subnet" -j RETURN
+            done
+        fi`)
+		cmdDocker.Stdout = os.Stdout
+		cmdDocker.Stderr = os.Stderr
+		if err := cmdDocker.Run(); err != nil {
+			p.logger.Fatal().Err(err).Msg("Failed while configuring iptables. Are you root?")
+		}
+		cmdInit := exec.Command("bash", "-c", fmt.Sprintf(`
+        set -ex
+        iptables -t mangle -A GOHPTS -p tcp -m mark --mark %d -j RETURN
+        iptables -t mangle -A GOHPTS -p tcp -j TPROXY --on-port %s --tproxy-mark 1
+
+        iptables -t mangle -A PREROUTING -p tcp -m socket -j DIVERT
+        iptables -t mangle -A PREROUTING -p tcp -j GOHPTS
+        `, p.mark, tproxyPort))
+		cmdInit.Stdout = os.Stdout
+		cmdInit.Stderr = os.Stderr
+		if err := cmdInit.Run(); err != nil {
+			p.logger.Fatal().Err(err).Msg("Failed while configuring iptables. Are you root?")
+		}
+	default:
+		p.logger.Fatal().Msgf("Unreachable, unknown mode: %s", p.tproxyMode)
 	}
 	cmdCat := exec.Command("bash", "-c", `
     cat /proc/sys/net/ipv4/ip_forward
@@ -1272,16 +1342,36 @@ func (p *proxyapp) applyRedirectRules() string {
 }
 
 func (p *proxyapp) clearRedirectRules(output string) error {
-	cmd := exec.Command("bash", "-c", fmt.Sprintf(`
-    set -ex
-    iptables -t nat -D PREROUTING -p tcp -j GOHPTS 2>/dev/null || true
-    iptables -t nat -D OUTPUT -p tcp -j GOHPTS 2>/dev/null || true
-    iptables -t nat -F GOHPTS 2>/dev/null || true
-    iptables -t nat -X GOHPTS 2>/dev/null || true
-    sysctl -w net.ipv4.ip_forward=%s
-    `, output))
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	var cmd *exec.Cmd
+	switch p.tproxyMode {
+	case "redirect":
+		cmd = exec.Command("bash", "-c", fmt.Sprintf(`
+        set -ex
+        iptables -t nat -D PREROUTING -p tcp -j GOHPTS 2>/dev/null || true
+        iptables -t nat -D OUTPUT -p tcp -j GOHPTS 2>/dev/null || true
+        iptables -t nat -F GOHPTS 2>/dev/null || true
+        iptables -t nat -X GOHPTS 2>/dev/null || true
+        sysctl -w net.ipv4.ip_forward=%s
+        `, output))
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+	case "tproxy":
+		cmd = exec.Command("bash", "-c", fmt.Sprintf(`
+        set -ex
+        iptables -t mangle -D PREROUTING -p tcp -m socket -j DIVERT 2>/dev/null || true
+        iptables -t mangle -D PREROUTING -p tcp -j GOHPTS 2>/dev/null || true
+        iptables -t mangle -F DIVERT 2>/dev/null || true
+        iptables -t mangle -F GOHPTS 2>/dev/null || true
+        iptables -t mangle -X DIVERT 2>/dev/null || true
+        iptables -t mangle -X GOHPTS 2>/dev/null || true
+
+        ip rule del fwmark 1 lookup 100 2>/dev/null || true
+        ip route flush table 100 || true
+        sysctl -w net.ipv4.ip_forward=%s
+        `, output))
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+	}
 	return cmd.Run()
 }
 
@@ -1420,12 +1510,16 @@ type serverConfig struct {
 	Server    server       `yaml:"server"`
 }
 
-func getFullAddress(v string) (string, error) {
+func getFullAddress(v string, all bool) (string, error) {
 	if v == "" {
 		return "", nil
 	}
-	if i, err := strconv.Atoi(v); err == nil {
-		return fmt.Sprintf("127.0.0.1:%d", i), nil
+	var ip string = "127.0.0.1"
+	if all {
+		ip = "0.0.0.0"
+	}
+	if port, err := strconv.Atoi(v); err == nil {
+		return fmt.Sprintf("%s:%d", ip, port), nil
 	}
 	host, port, err := net.SplitHostPort(v)
 	if err != nil {
@@ -1437,7 +1531,7 @@ func getFullAddress(v string) (string, error) {
 	if host != "" && port != "" {
 		return v, nil
 	} else if port != "" {
-		return fmt.Sprintf("127.0.0.1:%s", port), nil
+		return fmt.Sprintf("%s:%s", ip, port), nil
 	}
 	return "", fmt.Errorf("failed parsing address")
 }
@@ -1586,22 +1680,33 @@ func New(conf *Config) *proxyapp {
 	p.tproxyMode = conf.TProxyMode
 	tproxyonly := conf.TProxyOnly != ""
 	if tproxyonly {
-		p.tproxyAddr, err = getFullAddress(conf.TProxyOnly)
-		if err != nil {
-			p.logger.Fatal().Err(err).Msg("")
+		if p.tproxyMode == "tproxy" {
+			p.tproxyAddr, err = getFullAddress(conf.TProxyOnly, true)
+			if err != nil {
+				p.logger.Fatal().Err(err).Msg("")
+			}
+		} else {
+			p.tproxyAddr, err = getFullAddress(conf.TProxyOnly, false)
+			if err != nil {
+				p.logger.Fatal().Err(err).Msg("")
+			}
 		}
 	} else {
-		p.tproxyAddr, err = getFullAddress(conf.TProxy)
-		if err != nil {
-			p.logger.Fatal().Err(err).Msg("")
+		if p.tproxyMode == "tproxy" {
+			p.tproxyAddr, err = getFullAddress(conf.TProxy, true)
+			if err != nil {
+				p.logger.Fatal().Err(err).Msg("")
+			}
+		} else {
+			p.tproxyAddr, err = getFullAddress(conf.TProxy, false)
+			if err != nil {
+				p.logger.Fatal().Err(err).Msg("")
+			}
 		}
 	}
 	p.auto = conf.Auto
 	if p.auto && runtime.GOOS != "linux" {
 		p.logger.Fatal().Msg("Auto setup is available only for linux system")
-	}
-	if p.auto && p.tproxyMode != "redirect" {
-		p.logger.Fatal().Msg("Auto setup is available only for redirect mode")
 	}
 	p.mark = conf.Mark
 	if p.mark > 0 && runtime.GOOS != "linux" {
@@ -1609,6 +1714,9 @@ func New(conf *Config) *proxyapp {
 	}
 	if p.mark > 0xFFFFFFFF {
 		p.logger.Fatal().Msg("SO_MARK is out of range")
+	}
+	if p.mark == 0 && p.tproxyMode == "tproxy" {
+		p.mark = 100
 	}
 	var addrHTTP, addrSOCKS, certFile, keyFile string
 	if conf.ServerConfPath != "" {
@@ -1625,7 +1733,7 @@ func New(conf *Config) *proxyapp {
 			if sconf.Server.Address == "" {
 				p.logger.Fatal().Err(err).Msg("[server config] Server address is empty")
 			}
-			addrHTTP, err = getFullAddress(sconf.Server.Address)
+			addrHTTP, err = getFullAddress(sconf.Server.Address, false)
 			if err != nil {
 				p.logger.Fatal().Err(err).Msg("")
 			}
@@ -1643,7 +1751,7 @@ func New(conf *Config) *proxyapp {
 		}
 		seen := make(map[string]struct{})
 		for idx, pr := range p.proxylist {
-			addr, err := getFullAddress(pr.Address)
+			addr, err := getFullAddress(pr.Address, false)
 			if err != nil {
 				p.logger.Fatal().Err(err).Msg("")
 			}
@@ -1662,7 +1770,7 @@ func New(conf *Config) *proxyapp {
 		p.rrIndexReset = rrIndexMax
 	} else {
 		if !tproxyonly {
-			addrHTTP, err = getFullAddress(conf.AddrHTTP)
+			addrHTTP, err = getFullAddress(conf.AddrHTTP, false)
 			if err != nil {
 				p.logger.Fatal().Err(err).Msg("")
 			}
@@ -1672,7 +1780,7 @@ func New(conf *Config) *proxyapp {
 			p.user = conf.ServerUser
 			p.pass = conf.ServerPass
 		}
-		addrSOCKS, err = getFullAddress(conf.AddrSOCKS)
+		addrSOCKS, err = getFullAddress(conf.AddrSOCKS, false)
 		if err != nil {
 			p.logger.Fatal().Err(err).Msg("")
 		}

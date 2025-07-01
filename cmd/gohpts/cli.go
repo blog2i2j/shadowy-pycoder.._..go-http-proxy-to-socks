@@ -29,7 +29,37 @@ GitHub: https://github.com/shadowy-pycoder/go-http-proxy-to-socks
 
 Usage: gohpts [OPTIONS] 
 Options:
-  -h    Show this help message and exit.
+  -h        Show this help message and exit
+  -v        Show version and build information
+  -D        Run as a daemon (provide -logfile to see logs)
+
+  Proxy:
+  -l        Address of HTTP proxy server (default "127.0.0.1:8080") 
+  -s        Address of SOCKS5 proxy server (default "127.0.0.1:1080")
+  -c        Path to certificate PEM encoded file
+  -k        Path to private key PEM encoded file
+  -U        User for HTTP proxy (basic auth). This flag invokes prompt for password (not echoed to terminal)
+  -u        User for SOCKS5 proxy authentication. This flag invokes prompt for password (not echoed to terminal)
+  -f        Path to server configuration file in YAML format (overrides other proxy flags)
+  
+  Logs:
+  -d        Show logs in DEBUG mode
+  -j        Show logs in JSON format
+  -logfile  Log file path (Default: stdout)
+  -nocolor  Disable colored output for logs (no effect if -j flag specified)
+
+  Sniffing:
+  -sniff    Enable traffic sniffing for HTTP and TLS
+  -snifflog Sniffed traffic log file path (Default: the same as -logfile)
+  -body     Collect request and response body for HTTP traffic (credentials, tokens, etc)
+`
+const usageTproxy string = `
+  TProxy:
+  -t        Address of transparent proxy server (it starts along with HTTP proxy server)
+  -T        Address of transparent proxy server (no HTTP)
+  -M        Transparent proxy mode: (redirect, tproxy)
+  -auto     Automatically setup iptables for transparent proxy (requires elevated privileges)
+  -mark     Set mark for each packet sent through transparent proxy (Default: redirect 0, tproxy 100)
 `
 
 func root(args []string) error {
@@ -41,7 +71,7 @@ func root(args []string) error {
 	flags.StringVar(&conf.ServerUser, "U", "", "User for HTTP proxy (basic auth). This flag invokes prompt for password (not echoed to terminal)")
 	flags.StringVar(&conf.CertFile, "c", "", "Path to certificate PEM encoded file")
 	flags.StringVar(&conf.KeyFile, "k", "", "Path to private key PEM encoded file")
-	flags.StringVar(&conf.ServerConfPath, "f", "", "Path to server configuration file in YAML format")
+	flags.StringVar(&conf.ServerConfPath, "f", "", "Path to server configuration file in YAML format (overrides other proxy flags)")
 	daemon := flags.Bool("D", false, "Run as a daemon (provide -logfile to see logs)")
 	if runtime.GOOS == tproxyOS {
 		flags.StringVar(&conf.TProxy, "t", "", "Address of transparent proxy server (it starts along with HTTP proxy server)")
@@ -55,7 +85,7 @@ func root(args []string) error {
 			return nil
 		})
 		flags.BoolVar(&conf.Auto, "auto", false, "Automatically setup iptables for transparent proxy (requires elevated privileges)")
-		flags.UintVar(&conf.Mark, "mark", 0, "Set the mark for each packet sent through transparent proxy")
+		flags.UintVar(&conf.Mark, "mark", 0, "Set mark for each packet sent through transparent proxy (Default: redirect 0, tproxy 100)")
 	}
 	flags.StringVar(&conf.LogFilePath, "logfile", "", "Log file path (Default: stdout)")
 	flags.BoolVar(&conf.Debug, "d", false, "Show logs in DEBUG mode")
@@ -63,8 +93,8 @@ func root(args []string) error {
 	flags.BoolVar(&conf.Sniff, "sniff", false, "Enable traffic sniffing for HTTP and TLS")
 	flags.StringVar(&conf.SniffLogFile, "snifflog", "", "Sniffed traffic log file path (Default: the same as -logfile)")
 	flags.BoolVar(&conf.NoColor, "nocolor", false, "Disable colored output for logs (no effect if -j flag specified)")
-	flags.BoolVar(&conf.Body, "body", false, "Collect request and response body for HTTP sniffing")
-	flags.BoolFunc("v", "print version", func(flagValue string) error {
+	flags.BoolVar(&conf.Body, "body", false, "Collect request and response body for HTTP traffic (credentials, tokens, etc)")
+	flags.BoolFunc("v", "Show version and build information", func(flagValue string) error {
 		fmt.Printf("%s (built for %s %s with %s)\n", gohpts.Version, runtime.GOOS, runtime.GOARCH, runtime.Version())
 		os.Exit(0)
 		return nil
@@ -72,7 +102,9 @@ func root(args []string) error {
 
 	flags.Usage = func() {
 		fmt.Print(usagePrefix)
-		flags.PrintDefaults()
+		if runtime.GOOS == tproxyOS {
+			fmt.Print(usageTproxy)
+		}
 	}
 
 	if err := flags.Parse(args); err != nil {
@@ -106,9 +138,6 @@ func root(args []string) error {
 	if seen["auto"] {
 		if !seen["t"] && !seen["T"] {
 			return fmt.Errorf("-auto requires -t or -T flag")
-		}
-		if conf.TProxyMode != "redirect" {
-			return fmt.Errorf("-auto is available only for -M redirect")
 		}
 	}
 	if seen["mark"] {
