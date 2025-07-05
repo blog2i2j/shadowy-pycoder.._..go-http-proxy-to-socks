@@ -1,3 +1,4 @@
+// Package gohpts transform SOCKS5 proxy into HTTP(S) proxy with support for Transparent Proxy (Redirect and TProxy), Proxychains and Traffic Sniffing
 package gohpts
 
 import (
@@ -52,11 +53,19 @@ var (
 	supportedChainTypes  = []string{"strict", "dynamic", "random", "round_robin"}
 	SupportedTProxyModes = []string{"redirect", "tproxy"}
 	errInvalidWrite      = errors.New("invalid write result")
-	ipPortPattern        = regexp.MustCompile(`\b(?:\d{1,3}\.){3}\d{1,3}(?::(6553[0-5]|655[0-2]\d|65[0-4]\d{2}|6[0-4]\d{3}|[1-5]?\d{1,4}))?\b`)
-	domainPattern        = regexp.MustCompile(`\b(?:[a-zA-Z0-9-]{1,63}\.)+(?:com|net|org|io|co|uk|ru|de|edu|gov|info|biz|dev|app|ai)(?::(6553[0-5]|655[0-2]\d|65[0-4]\d{2}|6[0-4]\d{3}|[1-5]?\d{1,4}))?\b`)
-	jwtPattern           = regexp.MustCompile(`\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b`)
-	authPattern          = regexp.MustCompile(`(?i)(?:"|')?(authorization|auth[_-]?token|access[_-]?token|api[_-]?key|secret|token)(?:"|')?\s*[:=]\s*(?:"|')?([^\s"'&]+)`)
-	credsPattern         = regexp.MustCompile(`(?i)(?:"|')?(username|user|login|email|password|pass|pwd)(?:"|')?\s*[:=]\s*(?:"|')?([^\s"'&]+)`)
+	ipPortPattern        = regexp.MustCompile(
+		`\b(?:\d{1,3}\.){3}\d{1,3}(?::(6553[0-5]|655[0-2]\d|65[0-4]\d{2}|6[0-4]\d{3}|[1-5]?\d{1,4}))?\b`,
+	)
+	domainPattern = regexp.MustCompile(
+		`\b(?:[a-zA-Z0-9-]{1,63}\.)+(?:com|net|org|io|co|uk|ru|de|edu|gov|info|biz|dev|app|ai)(?::(6553[0-5]|655[0-2]\d|65[0-4]\d{2}|6[0-4]\d{3}|[1-5]?\d{1,4}))?\b`,
+	)
+	jwtPattern  = regexp.MustCompile(`\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b`)
+	authPattern = regexp.MustCompile(
+		`(?i)(?:"|')?(authorization|auth[_-]?token|access[_-]?token|api[_-]?key|secret|token)(?:"|')?\s*[:=]\s*(?:"|')?([^\s"'&]+)`,
+	)
+	credsPattern = regexp.MustCompile(
+		`(?i)(?:"|')?(username|user|login|email|password|pass|pwd)(?:"|')?\s*[:=]\s*(?:"|')?([^\s"'&]+)`,
+	)
 )
 
 // Hop-by-hop headers
@@ -90,7 +99,7 @@ type Config struct {
 	Mark           uint
 	LogFilePath    string
 	Debug          bool
-	Json           bool
+	JSON           bool
 	Sniff          bool
 	SniffLogFile   string
 	NoColor        bool
@@ -152,12 +161,12 @@ func randColor() func(string) *colors.Color {
 	return rColors[randIndex]
 }
 
-func (p *proxyapp) getId() string {
+func (p *proxyapp) getID() string {
 	id := uuid.New()
 	if p.nocolor {
-		return fmt.Sprintf("%s", colors.WrapBrackets(id.String()))
+		return colors.WrapBrackets(id.String())
 	}
-	return randColor()(fmt.Sprintf("%s", colors.WrapBrackets(id.String()))).String()
+	return randColor()(colors.WrapBrackets(id.String())).String()
 }
 
 func (p *proxyapp) colorizeStatus(code int, status string, bg bool) string {
@@ -181,7 +190,13 @@ func (p *proxyapp) colorizeStatus(code int, status string, bg bool) string {
 	return status
 }
 
-func (p *proxyapp) colorizeHTTP(req *http.Request, resp *http.Response, reqBodySaved, respBodySaved *[]byte, id string, ts bool) string {
+func (p *proxyapp) colorizeHTTP(
+	req *http.Request,
+	resp *http.Response,
+	reqBodySaved, respBodySaved *[]byte,
+	id string,
+	ts bool,
+) string {
 	var sb strings.Builder
 	if ts {
 		sb.WriteString(fmt.Sprintf("%s ", p.colorizeTimestamp()))
@@ -190,7 +205,7 @@ func (p *proxyapp) colorizeHTTP(req *http.Request, resp *http.Response, reqBodyS
 		sb.WriteString(id)
 		sb.WriteString(fmt.Sprintf(" %s %s %s ", req.Method, req.URL, req.Proto))
 		if req.UserAgent() != "" {
-			sb.WriteString(fmt.Sprintf("%s", colors.WrapBrackets(req.UserAgent())))
+			sb.WriteString(colors.WrapBrackets(req.UserAgent()))
 		}
 		if req.ContentLength > 0 {
 			sb.WriteString(fmt.Sprintf(" Len: %d", req.ContentLength))
@@ -224,7 +239,7 @@ func (p *proxyapp) colorizeHTTP(req *http.Request, resp *http.Response, reqBodyS
 		sb.WriteString(colors.YellowBg(fmt.Sprintf("%s ", req.URL)).String())
 		sb.WriteString(colors.BlueBg(fmt.Sprintf("%s ", req.Proto)).String())
 		if req.UserAgent() != "" {
-			sb.WriteString(colors.Gray(fmt.Sprintf("%s", colors.WrapBrackets(req.UserAgent()))).String())
+			sb.WriteString(colors.Gray(colors.WrapBrackets(req.UserAgent())).String())
 		}
 		if req.ContentLength > 0 {
 			sb.WriteString(colors.BeigeBg(fmt.Sprintf(" Len: %d", req.ContentLength)).String())
@@ -814,7 +829,7 @@ func (p *proxyapp) handleForward(w http.ResponseWriter, r *http.Request) {
 			}
 			p.snifflogger.Log().Msg(fmt.Sprintf("[%s]", strings.Join(sniffheader, ",")))
 		} else {
-			id := p.getId()
+			id := p.getID()
 			p.snifflogger.Log().Msg(p.colorizeHTTP(req, resp, &reqBodySaved, &respBodySaved, id, false))
 		}
 	}
@@ -943,10 +958,13 @@ func (p *proxyapp) handleTunnel(w http.ResponseWriter, r *http.Request) {
 	if p.sniff {
 		wg.Add(1)
 		sniffheader := make([]string, 0, 6)
-		id := p.getId()
+		id := p.getID()
 		if p.json {
-			sniffheader = append(sniffheader, fmt.Sprintf("{\"connection\":{\"src_remote\":%s,\"src_local\":%s,\"dst_local\":%s,\"dst_remote\":%s}}",
-				srcConn.RemoteAddr(), srcConn.LocalAddr(), dstConn.LocalAddr(), dstConn.RemoteAddr()))
+			sniffheader = append(
+				sniffheader,
+				fmt.Sprintf("{\"connection\":{\"src_remote\":%s,\"src_local\":%s,\"dst_local\":%s,\"dst_remote\":%s}}",
+					srcConn.RemoteAddr(), srcConn.LocalAddr(), dstConn.LocalAddr(), dstConn.RemoteAddr()),
+			)
 			j, err := json.Marshal(&layers.HTTPMessage{Request: r})
 			if err == nil {
 				sniffheader = append(sniffheader, string(j))
@@ -1009,7 +1027,7 @@ func (p *proxyapp) sniffreporter(wg *sync.WaitGroup, sniffheader *[]string, reqC
 				if p.json {
 					p.snifflogger.Log().Msg(fmt.Sprintf("[%s]", strings.Join(*sniffheader, ",")))
 				} else {
-					p.snifflogger.Log().Msg(fmt.Sprintf("%s", strings.Join(*sniffheader, "\n")))
+					p.snifflogger.Log().Msg(strings.Join(*sniffheader, "\n"))
 				}
 			}
 			*sniffheader = (*sniffheader)[:sniffheaderlen]
@@ -1089,7 +1107,13 @@ readLoop:
 	return written, err
 }
 
-func (p *proxyapp) transfer(wg *sync.WaitGroup, dst net.Conn, src net.Conn, destName, srcName string, msgChan chan<- layers.Layer) {
+func (p *proxyapp) transfer(
+	wg *sync.WaitGroup,
+	dst net.Conn,
+	src net.Conn,
+	destName, srcName string,
+	msgChan chan<- layers.Layer,
+) {
 	defer func() {
 		wg.Done()
 		close(msgChan)
@@ -1173,10 +1197,10 @@ func (p *proxyapp) applyRedirectRules() string {
 		}
 		cmdInit := exec.Command("bash", "-c", `
         set -ex
-        iptables -t nat -N GOHPTS 2>/dev/null 
-        iptables -t nat -F GOHPTS 
-         
-        iptables -t nat -A GOHPTS -d 127.0.0.0/8 -j RETURN 
+        iptables -t nat -N GOHPTS 2>/dev/null
+        iptables -t nat -F GOHPTS
+
+        iptables -t nat -A GOHPTS -d 127.0.0.0/8 -j RETURN
         iptables -t nat -A GOHPTS -p tcp --dport 22 -j RETURN
         `)
 		cmdInit.Stdout = os.Stdout
@@ -1186,13 +1210,13 @@ func (p *proxyapp) applyRedirectRules() string {
 		}
 		if p.httpServerAddr != "" {
 			_, httpPort, _ := net.SplitHostPort(p.httpServerAddr)
-			cmdHttp := exec.Command("bash", "-c", fmt.Sprintf(`
+			cmdHTTP := exec.Command("bash", "-c", fmt.Sprintf(`
             set -ex
             iptables -t nat -A GOHPTS -p tcp --dport %s -j RETURN
             `, httpPort))
-			cmdHttp.Stdout = os.Stdout
-			cmdHttp.Stderr = os.Stderr
-			if err := cmdHttp.Run(); err != nil {
+			cmdHTTP.Stdout = os.Stdout
+			cmdHTTP.Stderr = os.Stderr
+			if err := cmdHTTP.Run(); err != nil {
 				p.logger.Fatal().Err(err).Msg("Failed while configuring iptables. Are you root?")
 			}
 		}
@@ -1241,7 +1265,7 @@ func (p *proxyapp) applyRedirectRules() string {
             for subnet in $(docker network inspect $(docker network ls -q) --format '{{range .IPAM.Config}}{{.Subnet}}{{end}}'); do
               iptables -t nat -A GOHPTS -d "$subnet" -j RETURN
             done
-        fi 
+        fi
 
         iptables -t nat -A GOHPTS -p tcp -j REDIRECT --to-ports %s
 
@@ -1514,7 +1538,7 @@ func getFullAddress(v string, all bool) (string, error) {
 	if v == "" {
 		return "", nil
 	}
-	var ip string = "127.0.0.1"
+	ip := "127.0.0.1"
 	if all {
 		ip = "0.0.0.0"
 	}
@@ -1549,21 +1573,21 @@ func expandPath(p string) string {
 func New(conf *Config) *proxyapp {
 	var logger, snifflogger zerolog.Logger
 	var p proxyapp
-	var logfile *os.File = os.Stdout
+	logfile := os.Stdout
 	var snifflog *os.File
 	var err error
 	p.sniff = conf.Sniff
 	p.body = conf.Body
-	p.json = conf.Json
+	p.json = conf.JSON
 	if conf.LogFilePath != "" {
-		f, err := os.OpenFile(conf.LogFilePath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
+		f, err := os.OpenFile(conf.LogFilePath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
 		if err != nil {
 			log.Fatalf("Failed to open log file: %v", err)
 		}
 		logfile = f
 	}
 	if conf.SniffLogFile != "" && conf.SniffLogFile != conf.LogFilePath {
-		f, err := os.OpenFile(conf.SniffLogFile, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
+		f, err := os.OpenFile(conf.SniffLogFile, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
 		if err != nil {
 			log.Fatalf("Failed to open sniff log file: %v", err)
 		}
@@ -1571,8 +1595,8 @@ func New(conf *Config) *proxyapp {
 	} else {
 		snifflog = logfile
 	}
-	p.nocolor = conf.Json || conf.NoColor
-	if conf.Json {
+	p.nocolor = conf.JSON || conf.NoColor
+	if conf.JSON {
 		log.SetFlags(0)
 		jsonWriter := jsonLogWriter{file: logfile}
 		log.SetOutput(jsonWriter)
@@ -1597,7 +1621,7 @@ func New(conf *Config) *proxyapp {
 			}
 			s := i.(string)
 			if p.nocolor {
-				return fmt.Sprintf("%s", s)
+				return s
 			}
 			result := ipPortPattern.ReplaceAllStringFunc(s, func(match string) string {
 				return colors.Gray(match).String()
@@ -1615,7 +1639,7 @@ func New(conf *Config) *proxyapp {
 		output.FormatErrFieldValue = func(i any) string {
 			s := i.(string)
 			if p.nocolor {
-				return fmt.Sprintf("%s", s)
+				return s
 			}
 			result := ipPortPattern.ReplaceAllStringFunc(s, func(match string) string {
 				return colors.Red(match).String()
@@ -1624,7 +1648,6 @@ func New(conf *Config) *proxyapp {
 				return colors.Red(match).String()
 			})
 			return result
-
 		}
 		logger = zerolog.New(output).With().Timestamp().Logger()
 		sniffoutput := zerolog.ConsoleWriter{Out: snifflog, TimeFormat: time.RFC3339, NoColor: p.nocolor, PartsExclude: []string{"level"}}
@@ -1648,7 +1671,7 @@ func New(conf *Config) *proxyapp {
 		sniffoutput.FormatErrFieldValue = func(i any) string {
 			s := i.(string)
 			if p.nocolor {
-				return fmt.Sprintf("%s", s)
+				return s
 			}
 			result := ipPortPattern.ReplaceAllStringFunc(s, func(match string) string {
 				return colors.Red(match).String()
@@ -1657,7 +1680,6 @@ func New(conf *Config) *proxyapp {
 				return colors.Red(match).String()
 			})
 			return result
-
 		}
 		snifflogger = zerolog.New(sniffoutput).With().Timestamp().Logger()
 	}

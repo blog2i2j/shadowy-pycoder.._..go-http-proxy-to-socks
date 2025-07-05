@@ -17,31 +17,32 @@ const (
 	addrHTTP  string = "127.0.0.1:8080"
 	tproxyOS  string = "linux"
 )
-const usagePrefix string = `    _____       _    _ _____ _______ _____ 
+
+const usagePrefix string = `    _____       _    _ _____ _______ _____
   / ____|     | |  | |  __ \__   __/ ____|
- | |  __  ___ | |__| | |__) | | | | (___  
- | | |_ |/ _ \|  __  |  ___/  | |  \___ \ 
+ | |  __  ___ | |__| | |__) | | | | (___
+ | | |_ |/ _ \|  __  |  ___/  | |  \___ \
  | |__| | (_) | |  | | |      | |  ____) |
-  \_____|\___/|_|  |_|_|      |_| |_____/ 
-                                          
-GoHPTS (HTTP(S) Proxy to SOCKS5 proxy) by shadowy-pycoder                         
+  \_____|\___/|_|  |_|_|      |_| |_____/
+
+GoHPTS (HTTP(S) Proxy to SOCKS5 proxy) by shadowy-pycoder
 GitHub: https://github.com/shadowy-pycoder/go-http-proxy-to-socks
 
-Usage: gohpts [OPTIONS] 
+Usage: gohpts [OPTIONS]
 Options:
   -h        Show this help message and exit
   -v        Show version and build information
   -D        Run as a daemon (provide -logfile to see logs)
 
   Proxy:
-  -l        Address of HTTP proxy server (default "127.0.0.1:8080") 
+  -l        Address of HTTP proxy server (default "127.0.0.1:8080")
   -s        Address of SOCKS5 proxy server (default "127.0.0.1:1080")
   -c        Path to certificate PEM encoded file
   -k        Path to private key PEM encoded file
   -U        User for HTTP proxy (basic auth). This flag invokes prompt for password (not echoed to terminal)
   -u        User for SOCKS5 proxy authentication. This flag invokes prompt for password (not echoed to terminal)
   -f        Path to server configuration file in YAML format (overrides other proxy flags)
-  
+
   Logs:
   -d        Show logs in DEBUG mode
   -j        Show logs in JSON format
@@ -53,6 +54,7 @@ Options:
   -snifflog Sniffed traffic log file path (Default: the same as -logfile)
   -body     Collect request and response body for HTTP traffic (credentials, tokens, etc)
 `
+
 const usageTproxy string = `
   TProxy:
   -t        Address of transparent proxy server (it starts along with HTTP proxy server)
@@ -66,12 +68,27 @@ func root(args []string) error {
 	conf := gohpts.Config{}
 	flags := flag.NewFlagSet(app, flag.ExitOnError)
 	flags.StringVar(&conf.AddrSOCKS, "s", addrSOCKS, "Address of SOCKS5 proxy server")
-	flags.StringVar(&conf.User, "u", "", "User for SOCKS5 proxy authentication. This flag invokes prompt for password (not echoed to terminal)")
+	flags.StringVar(
+		&conf.User,
+		"u",
+		"",
+		"User for SOCKS5 proxy authentication. This flag invokes prompt for password (not echoed to terminal)",
+	)
 	flags.StringVar(&conf.AddrHTTP, "l", addrHTTP, "Address of HTTP proxy server")
-	flags.StringVar(&conf.ServerUser, "U", "", "User for HTTP proxy (basic auth). This flag invokes prompt for password (not echoed to terminal)")
+	flags.StringVar(
+		&conf.ServerUser,
+		"U",
+		"",
+		"User for HTTP proxy (basic auth). This flag invokes prompt for password (not echoed to terminal)",
+	)
 	flags.StringVar(&conf.CertFile, "c", "", "Path to certificate PEM encoded file")
 	flags.StringVar(&conf.KeyFile, "k", "", "Path to private key PEM encoded file")
-	flags.StringVar(&conf.ServerConfPath, "f", "", "Path to server configuration file in YAML format (overrides other proxy flags)")
+	flags.StringVar(
+		&conf.ServerConfPath,
+		"f",
+		"",
+		"Path to server configuration file in YAML format (overrides other proxy flags)",
+	)
 	daemon := flags.Bool("D", false, "Run as a daemon (provide -logfile to see logs)")
 	if runtime.GOOS == tproxyOS {
 		flags.StringVar(&conf.TProxy, "t", "", "Address of transparent proxy server (it starts along with HTTP proxy server)")
@@ -84,12 +101,22 @@ func root(args []string) error {
 			conf.TProxyMode = flagValue
 			return nil
 		})
-		flags.BoolVar(&conf.Auto, "auto", false, "Automatically setup iptables for transparent proxy (requires elevated privileges)")
-		flags.UintVar(&conf.Mark, "mark", 0, "Set mark for each packet sent through transparent proxy (Default: redirect 0, tproxy 100)")
+		flags.BoolVar(
+			&conf.Auto,
+			"auto",
+			false,
+			"Automatically setup iptables for transparent proxy (requires elevated privileges)",
+		)
+		flags.UintVar(
+			&conf.Mark,
+			"mark",
+			0,
+			"Set mark for each packet sent through transparent proxy (Default: redirect 0, tproxy 100)",
+		)
 	}
 	flags.StringVar(&conf.LogFilePath, "logfile", "", "Log file path (Default: stdout)")
 	flags.BoolVar(&conf.Debug, "d", false, "Show logs in DEBUG mode")
-	flags.BoolVar(&conf.Json, "j", false, "Show logs in JSON format")
+	flags.BoolVar(&conf.JSON, "j", false, "Show logs in JSON format")
 	flags.BoolVar(&conf.Sniff, "sniff", false, "Enable traffic sniffing for HTTP and TLS")
 	flags.StringVar(&conf.SniffLogFile, "snifflog", "", "Sniffed traffic log file path (Default: the same as -logfile)")
 	flags.BoolVar(&conf.NoColor, "nocolor", false, "Disable colored output for logs (no effect if -j flag specified)")

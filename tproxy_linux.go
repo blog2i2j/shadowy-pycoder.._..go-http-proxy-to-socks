@@ -94,7 +94,15 @@ func (ts *tproxyServer) serve() {
 }
 
 func getsockopt(s int, level int, optname int, optval unsafe.Pointer, optlen *uint32) (err error) {
-	_, _, e := unix.Syscall6(unix.SYS_GETSOCKOPT, uintptr(s), uintptr(level), uintptr(optname), uintptr(optval), uintptr(unsafe.Pointer(optlen)), 0)
+	_, _, e := unix.Syscall6(
+		unix.SYS_GETSOCKOPT,
+		uintptr(s),
+		uintptr(level),
+		uintptr(optname),
+		uintptr(optval),
+		uintptr(unsafe.Pointer(optlen)),
+		0,
+	)
 	if e != 0 {
 		return e
 	}
@@ -181,10 +189,20 @@ func (ts *tproxyServer) handleConnection(srcConn net.Conn) {
 	if ts.pa.sniff {
 		wg.Add(1)
 		sniffheader := make([]string, 0, 6)
-		id := ts.pa.getId()
+		id := ts.pa.getID()
 		if ts.pa.json {
-			sniffheader = append(sniffheader, fmt.Sprintf("{\"connection\":{\"tproxy_mode\":%s,\"src_remote\":%s,\"src_local\":%s,\"dst_local\":%s,\"dst_remote\":%s,\"original_dst\":%s}}",
-				ts.pa.tproxyMode, srcConn.RemoteAddr(), srcConn.LocalAddr(), dstConn.LocalAddr(), dstConn.RemoteAddr(), dst))
+			sniffheader = append(
+				sniffheader,
+				fmt.Sprintf(
+					"{\"connection\":{\"tproxy_mode\":%s,\"src_remote\":%s,\"src_local\":%s,\"dst_local\":%s,\"dst_remote\":%s,\"original_dst\":%s}}",
+					ts.pa.tproxyMode,
+					srcConn.RemoteAddr(),
+					srcConn.LocalAddr(),
+					dstConn.LocalAddr(),
+					dstConn.RemoteAddr(),
+					dst,
+				),
+			)
 		} else {
 			var sb strings.Builder
 			if ts.pa.nocolor {
