@@ -7,7 +7,7 @@
 ![GitHub Release](https://img.shields.io/github/v/release/shadowy-pycoder/go-http-proxy-to-socks)
 ![GitHub Downloads (all assets, all releases)](https://img.shields.io/github/downloads/shadowy-pycoder/go-http-proxy-to-socks/total)
 
-<p align="center"><img alt="MrGopher" src="resources/mr_gopher.png" height="300" />
+<p align="center"><img alt="MrGopher" src="resources/mr_gopher_small.png"/>
 
 ## Table of contents
 
