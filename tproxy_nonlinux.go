@@ -4,6 +4,7 @@
 package gohpts
 
 import (
+	"fmt"
 	"net"
 	"sync"
 	"syscall"
@@ -45,4 +46,8 @@ func (ts *tproxyServer) Shutdown() {}
 func getBaseDialer(timeout time.Duration, mark uint) *net.Dialer {
 	_ = mark
 	return &net.Dialer{Timeout: timeout}
+}
+
+func getDefaultInterface() (*net.Interface, error) {
+	return nil, fmt.Errorf("not implemented")
 }

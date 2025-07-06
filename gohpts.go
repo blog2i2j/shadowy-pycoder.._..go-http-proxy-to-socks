@@ -97,6 +97,7 @@ type Config struct {
 	TProxyMode     string
 	Auto           bool
 	Mark           uint
+	ARP            bool
 	LogFilePath    string
 	Debug          bool
 	JSON           bool
@@ -120,6 +121,7 @@ type proxyapp struct {
 	tproxyMode     string
 	auto           bool
 	mark           uint
+	arp            bool
 	user           string
 	pass           string
 	proxychain     chain
@@ -1361,10 +1363,53 @@ func (p *proxyapp) applyRedirectRules() string {
 	cmdForward.Stdout = os.Stdout
 	cmdForward.Stderr = os.Stderr
 	_ = cmdForward.Run()
+	if p.arp {
+		cmdClear := exec.Command("bash", "-c", `
+        set -ex
+		iptables -t filter -F GOHPTS 2>/dev/null || true
+		iptables -t filter -D FORWARD -j GOHPTS  2>/dev/null || true
+		iptables -t filter -X GOHPTS  2>/dev/null || true
+        `)
+		cmdClear.Stdout = os.Stdout
+		cmdClear.Stderr = os.Stderr
+		if err := cmdClear.Run(); err != nil {
+			p.logger.Fatal().Err(err).Msg("Failed while configuring iptables. Are you root?")
+		}
+		iface, err := getDefaultInterface()
+		if err != nil {
+			p.logger.Fatal().Err(err).Msg("failed getting default network interface")
+		}
+		cmdForward := exec.Command("bash", "-c", fmt.Sprintf(`
+		set -ex
+		iptables -t filter -N GOHPTS 2>/dev/null
+		iptables -t filter -F GOHPTS
+		iptables -t filter -A FORWARD -j GOHPTS
+		iptables -t filter -A GOHPTS -i %s -j ACCEPT
+		iptables -t filter -A GOHPTS -o %s -j ACCEPT
+		`, iface.Name, iface.Name))
+		cmdForward.Stdout = os.Stdout
+		cmdForward.Stderr = os.Stderr
+		if err := cmdForward.Run(); err != nil {
+			p.logger.Fatal().Err(err).Msg("Failed while configuring iptables. Are you root?")
+		}
+	}
 	return string(output)
 }
 
 func (p *proxyapp) clearRedirectRules(output string) error {
+	if p.arp {
+		cmdClear := exec.Command("bash", "-c", `
+        set -ex
+		iptables -t filter -F GOHPTS 2>/dev/null || true
+		iptables -t filter -D FORWARD -j GOHPTS  2>/dev/null || true
+		iptables -t filter -X GOHPTS  2>/dev/null || true
+        `)
+		cmdClear.Stdout = os.Stdout
+		cmdClear.Stderr = os.Stderr
+		if err := cmdClear.Run(); err != nil {
+			p.logger.Fatal().Err(err).Msg("Failed while configuring iptables. Are you root?")
+		}
+	}
 	var cmd *exec.Cmd
 	switch p.tproxyMode {
 	case "redirect":
@@ -1701,7 +1746,7 @@ func New(conf *Config) *proxyapp {
 	p.tproxyMode = conf.TProxyMode
 	tproxyonly := conf.TProxyOnly != ""
 	if tproxyonly {
-		if p.tproxyMode == "tproxy" {
+		if p.tproxyMode != "" {
 			p.tproxyAddr, err = getFullAddress(conf.TProxyOnly, true)
 			if err != nil {
 				p.logger.Fatal().Err(err).Msg("")
@@ -1713,7 +1758,7 @@ func New(conf *Config) *proxyapp {
 			}
 		}
 	} else {
-		if p.tproxyMode == "tproxy" {
+		if p.tproxyMode != "" {
 			p.tproxyAddr, err = getFullAddress(conf.TProxy, true)
 			if err != nil {
 				p.logger.Fatal().Err(err).Msg("")
@@ -1738,6 +1783,12 @@ func New(conf *Config) *proxyapp {
 	}
 	if p.mark == 0 && p.tproxyMode == "tproxy" {
 		p.mark = 100
+	}
+	p.arp = conf.ARP
+	if p.arp && runtime.GOOS != "linux" {
+		p.logger.Fatal().Msg("ARP setup is available only for linux system")
+	} else if p.arp && !p.auto {
+		p.logger.Fatal().Msg("ARP setup requires auto configuration")
 	}
 	var addrHTTP, addrSOCKS, certFile, keyFile string
 	if conf.ServerConfPath != "" {

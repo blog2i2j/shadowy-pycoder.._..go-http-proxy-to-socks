@@ -61,6 +61,7 @@ const usageTproxy string = `
   -T        Address of transparent proxy server (no HTTP)
   -M        Transparent proxy mode: (redirect, tproxy)
   -auto     Automatically setup iptables for transparent proxy (requires elevated privileges)
+  -arp      Automatically setup iptables to proxy ARP spoofed traffic (use tools like bettercap to perform actual attack)
   -mark     Set mark for each packet sent through transparent proxy (Default: redirect 0, tproxy 100)
 `
 
@@ -112,6 +113,12 @@ func root(args []string) error {
 			"mark",
 			0,
 			"Set mark for each packet sent through transparent proxy (Default: redirect 0, tproxy 100)",
+		)
+		flags.BoolVar(
+			&conf.ARP,
+			"arp",
+			false,
+			"Automatically setup iptables to proxy ARP spoofed traffic (use tools like bettercap to perform actual attack)",
 		)
 	}
 	flags.StringVar(&conf.LogFilePath, "logfile", "", "Log file path (Default: stdout)")
@@ -170,6 +177,11 @@ func root(args []string) error {
 	if seen["mark"] {
 		if !seen["t"] && !seen["T"] {
 			return fmt.Errorf("-mark requires -t or -T flag")
+		}
+	}
+	if seen["arp"] {
+		if !seen["auto"] {
+			return fmt.Errorf("-arp requires -auto flag")
 		}
 	}
 	if seen["f"] {
