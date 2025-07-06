@@ -401,7 +401,10 @@ func (p *proxyapp) colorizeTunnel(req, resp layers.Layer, sniffheader *[]string,
 	switch reqt := req.(type) {
 	case *layers.HTTPMessage:
 		var reqBodySaved, respBodySaved []byte
-		rest := resp.(*layers.HTTPMessage)
+		rest, ok := resp.(*layers.HTTPMessage)
+		if !ok {
+			return fmt.Errorf("failed parsing HTTP response")
+		}
 		if p.body {
 			reqBodySaved, _ = io.ReadAll(reqt.Request.Body)
 			respBodySaved, _ = io.ReadAll(rest.Response.Body)
