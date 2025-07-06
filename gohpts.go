@@ -1365,7 +1365,7 @@ func (p *proxyapp) applyRedirectRules() string {
 	_ = cmdForward.Run()
 	if p.arp {
 		cmdClear := exec.Command("bash", "-c", `
-        set -ex
+		set -ex
 		iptables -t filter -F GOHPTS 2>/dev/null || true
 		iptables -t filter -D FORWARD -j GOHPTS  2>/dev/null || true
 		iptables -t filter -X GOHPTS  2>/dev/null || true
@@ -1399,7 +1399,7 @@ func (p *proxyapp) applyRedirectRules() string {
 func (p *proxyapp) clearRedirectRules(output string) error {
 	if p.arp {
 		cmdClear := exec.Command("bash", "-c", `
-        set -ex
+		set -ex
 		iptables -t filter -F GOHPTS 2>/dev/null || true
 		iptables -t filter -D FORWARD -j GOHPTS  2>/dev/null || true
 		iptables -t filter -X GOHPTS  2>/dev/null || true
