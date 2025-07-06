@@ -433,31 +433,27 @@ func (p *proxyapp) colorizeTunnel(req, resp layers.Layer, sniffheader *[]string,
 	case *layers.TLSMessage:
 		var chs *layers.TLSClientHello
 		var shs *layers.TLSServerHello
-		if len(reqt.Records) > 0 {
-			hsrec := reqt.Records[0]
-			if hsrec.ContentType == layers.HandshakeTLSVal { // TODO: add more cases, parse all records
-				switch parser := layers.HSTLSParserByType(hsrec.Data[0]).(type) {
-				case *layers.TLSClientHello:
-					err := parser.ParseHS(hsrec.Data)
-					if err != nil {
-						return err
-					}
-					chs = parser
+		hsrec := reqt.Records[0]                         // len(Records) > 0 after dispatch
+		if hsrec.ContentType == layers.HandshakeTLSVal { // TODO: add more cases, parse all records
+			switch parser := layers.HSTLSParserByType(hsrec.Data[0]).(type) {
+			case *layers.TLSClientHello:
+				err := parser.ParseHS(hsrec.Data)
+				if err != nil {
+					return err
 				}
+				chs = parser
 			}
 		}
 		rest := resp.(*layers.TLSMessage)
-		if len(rest.Records) > 0 {
-			hsrec := rest.Records[0]
-			if hsrec.ContentType == layers.HandshakeTLSVal {
-				switch parser := layers.HSTLSParserByType(hsrec.Data[0]).(type) {
-				case *layers.TLSServerHello:
-					err := parser.ParseHS(hsrec.Data)
-					if err != nil {
-						return err
-					}
-					shs = parser
+		hsrec = rest.Records[0]
+		if hsrec.ContentType == layers.HandshakeTLSVal {
+			switch parser := layers.HSTLSParserByType(hsrec.Data[0]).(type) {
+			case *layers.TLSServerHello:
+				err := parser.ParseHS(hsrec.Data)
+				if err != nil {
+					return err
 				}
+				shs = parser
 			}
 		}
 		if chs != nil && shs != nil {
@@ -1045,7 +1041,7 @@ func dispatch(data []byte) (layers.Layer, error) {
 		return h, nil
 	}
 	m := &layers.TLSMessage{}
-	if err := m.Parse(data); err == nil {
+	if err := m.Parse(data); err == nil && len(m.Records) > 0 {
 		return m, nil
 	}
 	return nil, fmt.Errorf("failed sniffing traffic")
