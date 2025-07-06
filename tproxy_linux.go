@@ -4,11 +4,13 @@
 package gohpts
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
 	"net"
 	"net/netip"
+	"os"
 	"strings"
 	"sync"
 	"syscall"
@@ -256,4 +258,24 @@ func getBaseDialer(timeout time.Duration, mark uint) *net.Dialer {
 		dialer = &net.Dialer{Timeout: timeout}
 	}
 	return dialer
+}
+
+func getDefaultInterface() (*net.Interface, error) {
+	f, err := os.Open("/proc/net/route")
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	defaultInterface := ""
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := scanner.Text()
+		fields := strings.Fields(line)
+		if len(fields) >= 2 && fields[1] == "00000000" {
+			defaultInterface = fields[0]
+			break
+		}
+	}
+	return net.InterfaceByName(defaultInterface)
 }
