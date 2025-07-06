@@ -56,37 +56,37 @@ Specify http server in proxy configuration of Postman
 
 [[Back]](#table-of-contents)
 
-- **Proxy Chain functionality**  
+- **Proxy Chain functionality**\
   Supports `strict`, `dynamic`, `random`, `round_robin` chains of SOCKS5 proxy
 
-- **Transparent proxy**  
+- **Transparent proxy**\
   Supports `redirect` (SO_ORIGINAL_DST) and `tproxy` (IP_TRANSPARENT) modes
 
-- **Traffic sniffing**  
+- **Traffic sniffing**\
   Proxy is able to parse HTTP headers and TLS handshake metadata
 
-- **DNS Leak Protection**  
+- **DNS Leak Protection**\
   DNS resolution occurs on SOCKS5 server side.
 
-- **CONNECT Method Support**  
+- **CONNECT Method Support**\
   Supports HTTP CONNECT tunneling, enabling HTTPS and other TCP-based protocols.
 
-- **Trailer Headers Support**  
+- **Trailer Headers Support**\
   Handles HTTP trailer headers
 
-- **Chunked Transfer Encoding**  
+- **Chunked Transfer Encoding**\
   Handles chunked and streaming responses
 
-- **SOCKS5 Authentication Support**  
+- **SOCKS5 Authentication Support**\
   Supports username/password authentication for SOCKS5 proxies.
 
-- **HTTP Authentication Support**  
+- **HTTP Authentication Support**\
   Supports username/password authentication for HTTP proxy server.
 
-- **Lightweight and Fast**  
+- **Lightweight and Fast**\
   Designed with minimal overhead and efficient request handling.
 
-- **Cross-Platform**  
+- **Cross-Platform**\
   Compatible with all major operating systems.
 
 ## Installation
@@ -492,10 +492,10 @@ ssh remote -D 1080 -Nf
 sudo env PATH=$PATH gohpts -d -T 8888 -M tproxy -sniff -body -auto -mark 100 -arp
 ```
 
-Run `bettercap`
+Run `bettercap` with this command (see [documentation](https://www.bettercap.org/)):
 
 ```shell
-sudo bettercap -eval "set net.probe on;set net.recon on;arp.spoof on"
+sudo bettercap -eval "set net.probe on;set net.recon on;;set arp.spoof.fullduplex true;arp.spoof on"
 ```
 
 Check proxy logs for traffic from other devices from your LAN
