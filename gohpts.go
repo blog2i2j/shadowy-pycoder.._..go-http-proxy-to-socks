@@ -403,10 +403,7 @@ func (p *proxyapp) colorizeTunnel(req, resp layers.Layer, sniffheader *[]string,
 	switch reqt := req.(type) {
 	case *layers.HTTPMessage:
 		var reqBodySaved, respBodySaved []byte
-		rest, ok := resp.(*layers.HTTPMessage)
-		if !ok {
-			return fmt.Errorf("failed parsing HTTP response")
-		}
+		rest := resp.(*layers.HTTPMessage)
 		if p.body {
 			reqBodySaved, _ = io.ReadAll(reqt.Request.Body)
 			respBodySaved, _ = io.ReadAll(rest.Response.Body)
@@ -1001,27 +998,63 @@ func (p *proxyapp) handleTunnel(w http.ResponseWriter, r *http.Request) {
 func (p *proxyapp) sniffreporter(wg *sync.WaitGroup, sniffheader *[]string, reqChan, respChan <-chan layers.Layer, id string) {
 	defer wg.Done()
 	sniffheaderlen := len(*sniffheader)
-	var reqQueue, respQueue []layers.Layer
+	var reqTLSQueue, respTLSQueue, reqHTTPQueue, respHTTPQueue []layers.Layer
 	for {
 		select {
 		case req, ok := <-reqChan:
 			if !ok {
 				return
 			} else {
-				reqQueue = append(reqQueue, req)
+				switch req.(type) {
+				case *layers.TLSMessage:
+					reqTLSQueue = append(reqTLSQueue, req)
+				case *layers.HTTPMessage:
+					reqHTTPQueue = append(reqHTTPQueue, req)
+				}
 			}
 		case resp, ok := <-respChan:
 			if !ok {
 				return
-			} else if len(reqQueue) > 0 { // HACK: is this right?
-				respQueue = append(respQueue, resp)
+			} else {
+				switch resp.(type) {
+				case *layers.TLSMessage:
+					// request comes first or response arrived first
+					if len(reqTLSQueue) > 0 || len(respTLSQueue) == 0 {
+						respTLSQueue = append(respTLSQueue, resp)
+						// remove unmatched response if still no requests
+					} else if len(reqTLSQueue) == 0 && len(respTLSQueue) == 1 {
+						respTLSQueue = respTLSQueue[1:]
+					}
+				case *layers.HTTPMessage:
+					if len(reqHTTPQueue) > 0 || len(respHTTPQueue) == 0 {
+						respHTTPQueue = append(respHTTPQueue, resp)
+					} else if len(reqHTTPQueue) == 0 && len(respHTTPQueue) == 1 {
+						respHTTPQueue = respHTTPQueue[1:]
+					}
+				}
 			}
 		}
-		if len(reqQueue) > 0 && len(respQueue) > 0 {
-			req := reqQueue[0]
-			resp := respQueue[0]
-			reqQueue = reqQueue[1:]
-			respQueue = respQueue[1:]
+		if len(reqHTTPQueue) > 0 && len(respHTTPQueue) > 0 {
+			req := reqHTTPQueue[0]
+			resp := respHTTPQueue[0]
+			reqHTTPQueue = reqHTTPQueue[1:]
+			respHTTPQueue = respHTTPQueue[1:]
+
+			err := p.colorizeTunnel(req, resp, sniffheader, id)
+			if err == nil && len(*sniffheader) > sniffheaderlen {
+				if p.json {
+					p.snifflogger.Log().Msg(fmt.Sprintf("[%s]", strings.Join(*sniffheader, ",")))
+				} else {
+					p.snifflogger.Log().Msg(strings.Join(*sniffheader, "\n"))
+				}
+			}
+			*sniffheader = (*sniffheader)[:sniffheaderlen]
+		}
+		if len(reqTLSQueue) > 0 && len(respTLSQueue) > 0 {
+			req := reqTLSQueue[0]
+			resp := respTLSQueue[0]
+			reqTLSQueue = reqTLSQueue[1:]
+			respTLSQueue = respTLSQueue[1:]
 
 			err := p.colorizeTunnel(req, resp, sniffheader, id)
 			if err == nil && len(*sniffheader) > sniffheaderlen {
