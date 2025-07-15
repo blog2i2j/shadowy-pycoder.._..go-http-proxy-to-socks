@@ -212,7 +212,7 @@ func (p *proxyapp) colorizeHTTP(
 		if req.ContentLength > 0 {
 			sb.WriteString(fmt.Sprintf(" Len: %d", req.ContentLength))
 		}
-		sb.WriteString(" -> ")
+		sb.WriteString(" →  ")
 		sb.WriteString(fmt.Sprintf("%s %s ", resp.Proto, resp.Status))
 		if resp.ContentLength > 0 {
 			sb.WriteString(fmt.Sprintf("Len: %d", resp.ContentLength))
@@ -246,7 +246,7 @@ func (p *proxyapp) colorizeHTTP(
 		if req.ContentLength > 0 {
 			sb.WriteString(colors.BeigeBg(fmt.Sprintf(" Len: %d", req.ContentLength)).String())
 		}
-		sb.WriteString(colors.MagentaBg(" -> ").String())
+		sb.WriteString(colors.MagentaBg(" →  ").String())
 		sb.WriteString(colors.BlueBg(fmt.Sprintf("%s ", resp.Proto)).String())
 		sb.WriteString(p.colorizeStatus(resp.StatusCode, fmt.Sprintf("%s ", resp.Status), true))
 		if resp.ContentLength > 0 {
@@ -294,7 +294,7 @@ func (p *proxyapp) colorizeTLS(req *layers.TLSClientHello, resp *layers.TLSServe
 		if req.ALPN != nil {
 			sb.WriteString(fmt.Sprintf(" ALPN: %v", req.ALPN))
 		}
-		sb.WriteString(" -> ")
+		sb.WriteString(" →  ")
 		sb.WriteString("\n")
 		sb.WriteString(fmt.Sprintf("%s ", p.colorizeTimestamp()))
 		sb.WriteString(id)
@@ -330,7 +330,7 @@ func (p *proxyapp) colorizeTLS(req *layers.TLSClientHello, resp *layers.TLSServe
 		if req.ALPN != nil {
 			sb.WriteString(colors.BlueBg(fmt.Sprintf(" ALPN: %v", req.ALPN)).String())
 		}
-		sb.WriteString(colors.MagentaBg(" -> ").String())
+		sb.WriteString(colors.MagentaBg(" →  ").String())
 		sb.WriteString("\n")
 		sb.WriteString(fmt.Sprintf("%s ", p.colorizeTimestamp()))
 		sb.WriteString(id)
@@ -534,7 +534,7 @@ func isLocalAddress(addr string) bool {
 
 func (p *proxyapp) printProxyChain(pc []proxyEntry) string {
 	var sb strings.Builder
-	sb.WriteString("client -> ")
+	sb.WriteString("client →  ")
 	if p.httpServerAddr != "" {
 		sb.WriteString(p.httpServerAddr)
 		if p.tproxyAddr != "" {
@@ -546,10 +546,10 @@ func (p *proxyapp) printProxyChain(pc []proxyEntry) string {
 		sb.WriteString(p.tproxyAddr)
 		sb.WriteString(fmt.Sprintf(" (%s)", p.tproxyMode))
 	}
-	sb.WriteString(" -> ")
+	sb.WriteString(" →  ")
 	for _, pe := range pc {
 		sb.WriteString(pe.String())
-		sb.WriteString(" -> ")
+		sb.WriteString(" →  ")
 	}
 	sb.WriteString("target")
 	return sb.String()
@@ -942,8 +942,8 @@ func (p *proxyapp) handleTunnel(w http.ResponseWriter, r *http.Request) {
 	}
 	defer srcConn.Close()
 
-	dstConnStr := fmt.Sprintf("%s->%s->%s", dstConn.LocalAddr().String(), dstConn.RemoteAddr().String(), r.Host)
-	srcConnStr := fmt.Sprintf("%s->%s", srcConn.RemoteAddr().String(), srcConn.LocalAddr().String())
+	dstConnStr := fmt.Sprintf("%s→ %s→ %s", dstConn.LocalAddr().String(), dstConn.RemoteAddr().String(), r.Host)
+	srcConnStr := fmt.Sprintf("%s→ %s", srcConn.RemoteAddr().String(), srcConn.LocalAddr().String())
 
 	p.logger.Debug().Msgf("%s - %s - %s", r.Proto, r.Method, r.Host)
 	p.logger.Debug().Msgf("src: %s - dst: %s", srcConnStr, dstConnStr)
@@ -971,16 +971,16 @@ func (p *proxyapp) handleTunnel(w http.ResponseWriter, r *http.Request) {
 			var sb strings.Builder
 			if p.nocolor {
 				sb.WriteString(id)
-				sb.WriteString(fmt.Sprintf(" Src: %s->%s -> Dst: %s->%s", srcConn.RemoteAddr(), srcConn.LocalAddr(), dstConn.LocalAddr(), dstConn.RemoteAddr()))
+				sb.WriteString(fmt.Sprintf(" Src: %s→ %s →  Dst: %s→ %s", srcConn.RemoteAddr(), srcConn.LocalAddr(), dstConn.LocalAddr(), dstConn.RemoteAddr()))
 				sb.WriteString("\n")
 				sb.WriteString(fmt.Sprintf("%s ", p.colorizeTimestamp()))
 				sb.WriteString(id)
 				sb.WriteString(fmt.Sprintf(" %s %s %s ", r.Method, r.Host, r.Proto))
 			} else {
 				sb.WriteString(id)
-				sb.WriteString(colors.Green(fmt.Sprintf(" Src: %s->%s", srcConn.RemoteAddr(), srcConn.LocalAddr())).String())
-				sb.WriteString(colors.Magenta(" -> ").String())
-				sb.WriteString(colors.Blue(fmt.Sprintf("Dst: %s->%s", dstConn.LocalAddr(), dstConn.RemoteAddr())).String())
+				sb.WriteString(colors.Green(fmt.Sprintf(" Src: %s→ %s", srcConn.RemoteAddr(), srcConn.LocalAddr())).String())
+				sb.WriteString(colors.Magenta(" →  ").String())
+				sb.WriteString(colors.Blue(fmt.Sprintf("Dst: %s→ %s", dstConn.LocalAddr(), dstConn.RemoteAddr())).String())
 				sb.WriteString("\n")
 				sb.WriteString(fmt.Sprintf("%s ", p.colorizeTimestamp()))
 				sb.WriteString(id)
@@ -1516,7 +1516,7 @@ func (p *proxyapp) Run() {
 			}
 			close(p.closeConn)
 			if tproxyServer != nil {
-				p.logger.Info().Msg("[tproxy] Server is shutting down...")
+				p.logger.Info().Msgf("[%s] Server is shutting down...", p.tproxyMode)
 				tproxyServer.Shutdown()
 			}
 			p.logger.Info().Msg("Server is shutting down...")
@@ -1557,7 +1557,7 @@ func (p *proxyapp) Run() {
 				}
 			}
 			close(p.closeConn)
-			p.logger.Info().Msg("[tproxy] Server is shutting down...")
+			p.logger.Info().Msgf("[%s] Server is shutting down...", p.tproxyMode)
 			tproxyServer.Shutdown()
 			close(done)
 		}()
@@ -1724,6 +1724,7 @@ func New(conf *Config) *proxyapp {
 			result = domainPattern.ReplaceAllStringFunc(result, func(match string) string {
 				return colors.Red(match).String()
 			})
+			result = strings.ReplaceAll(result, "->", "→ ")
 			return result
 		}
 		logger = zerolog.New(output).With().Timestamp().Logger()
@@ -1756,6 +1757,7 @@ func New(conf *Config) *proxyapp {
 			result = domainPattern.ReplaceAllStringFunc(result, func(match string) string {
 				return colors.Red(match).String()
 			})
+			result = strings.ReplaceAll(result, "->", "→ ")
 			return result
 		}
 		snifflogger = zerolog.New(sniffoutput).With().Timestamp().Logger()
@@ -1774,7 +1776,7 @@ func New(conf *Config) *proxyapp {
 		conf.TProxy = ""
 		conf.TProxyOnly = ""
 		conf.TProxyMode = ""
-		p.logger.Warn().Msg("[tproxy] functionality only available on linux system")
+		p.logger.Warn().Msgf("[%s] functionality only available on linux system", conf.TProxyMode)
 	}
 	p.tproxyMode = conf.TProxyMode
 	tproxyonly := conf.TProxyOnly != ""

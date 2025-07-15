@@ -117,11 +117,11 @@ func (ts *tproxyServer) getOriginalDst(rawConn syscall.RawConn) (string, error) 
 		optlen := uint32(unsafe.Sizeof(originalDst))
 		err := getsockopt(int(fd), unix.SOL_IP, unix.SO_ORIGINAL_DST, unsafe.Pointer(&originalDst), &optlen)
 		if err != nil {
-			ts.pa.logger.Error().Err(err).Msg("[tproxy] getsockopt SO_ORIGINAL_DST failed")
+			ts.pa.logger.Error().Err(err).Msgf("[%s] getsockopt SO_ORIGINAL_DST failed", ts.pa.tproxyMode)
 		}
 	})
 	if err != nil {
-		ts.pa.logger.Error().Err(err).Msg("[tproxy] Failed invoking control connection")
+		ts.pa.logger.Error().Err(err).Msgf("[%s] Failed invoking control connection", ts.pa.tproxyMode)
 		return "", err
 	}
 	dstHost := netip.AddrFrom4(originalDst.Addr)
@@ -140,47 +140,47 @@ func (ts *tproxyServer) handleConnection(srcConn net.Conn) {
 	case "redirect":
 		rawConn, err := srcConn.(*net.TCPConn).SyscallConn()
 		if err != nil {
-			ts.pa.logger.Error().Err(err).Msg("[tproxy] Failed to get raw connection")
+			ts.pa.logger.Error().Err(err).Msgf("[%s] Failed to get raw connection", ts.pa.tproxyMode)
 			return
 		}
 		dst, err = ts.getOriginalDst(rawConn)
 		if err != nil {
-			ts.pa.logger.Error().Err(err).Msg("[tproxy] Failed to get destination address")
+			ts.pa.logger.Error().Err(err).Msgf("[%s] Failed to get destination address", ts.pa.tproxyMode)
 			return
 		}
-		ts.pa.logger.Debug().Msgf("[tproxy] getsockopt SO_ORIGINAL_DST %s", dst)
+		ts.pa.logger.Debug().Msgf("[%s] getsockopt SO_ORIGINAL_DST %s", ts.pa.tproxyMode, dst)
 	case "tproxy":
 		dst = srcConn.LocalAddr().String()
-		ts.pa.logger.Debug().Msgf("[tproxy] IP_TRANSPARENT %s", dst)
+		ts.pa.logger.Debug().Msgf("[%s] IP_TRANSPARENT %s", ts.pa.tproxyMode, dst)
 	default:
 		ts.pa.logger.Fatal().Msg("Unknown tproxyMode")
 	}
 	if isLocalAddress(dst) {
 		dstConn, err = getBaseDialer(timeout, ts.pa.mark).Dial("tcp", dst)
 		if err != nil {
-			ts.pa.logger.Error().Err(err).Msgf("[tproxy] Failed connecting to %s", dst)
+			ts.pa.logger.Error().Err(err).Msgf("[%s] Failed connecting to %s", ts.pa.tproxyMode, dst)
 			return
 		}
 	} else {
 		sockDialer, _, err := ts.pa.getSocks()
 		if err != nil {
-			ts.pa.logger.Error().Err(err).Msg("[tproxy] Failed getting SOCKS5 client")
+			ts.pa.logger.Error().Err(err).Msgf("[%s] Failed getting SOCKS5 client", ts.pa.tproxyMode)
 			return
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), timeout)
 		defer cancel()
 		dstConn, err = sockDialer.(proxy.ContextDialer).DialContext(ctx, "tcp", dst)
 		if err != nil {
-			ts.pa.logger.Error().Err(err).Msgf("[tproxy] Failed connecting to %s", dst)
+			ts.pa.logger.Error().Err(err).Msgf("[%s] Failed connecting to %s", ts.pa.tproxyMode, dst)
 			return
 		}
 	}
 	defer dstConn.Close()
 
-	dstConnStr := fmt.Sprintf("%s->%s->%s", dstConn.LocalAddr().String(), dstConn.RemoteAddr().String(), dst)
-	srcConnStr := fmt.Sprintf("%s->%s", srcConn.RemoteAddr().String(), srcConn.LocalAddr().String())
+	dstConnStr := fmt.Sprintf("%s→ %s→ %s", dstConn.LocalAddr().String(), dstConn.RemoteAddr().String(), dst)
+	srcConnStr := fmt.Sprintf("%s→ %s", srcConn.RemoteAddr().String(), srcConn.LocalAddr().String())
 
-	ts.pa.logger.Debug().Msgf("[tproxy] src: %s - dst: %s", srcConnStr, dstConnStr)
+	ts.pa.logger.Debug().Msgf("[%s] src: %s - dst: %s", ts.pa.tproxyMode, srcConnStr, dstConnStr)
 
 	reqChan := make(chan layers.Layer)
 	respChan := make(chan layers.Layer)
@@ -209,12 +209,12 @@ func (ts *tproxyServer) handleConnection(srcConn net.Conn) {
 			var sb strings.Builder
 			if ts.pa.nocolor {
 				sb.WriteString(id)
-				sb.WriteString(fmt.Sprintf(" Src: %s->%s -> Dst: %s->%s Orig: %s", srcConn.RemoteAddr(), srcConn.LocalAddr(), dstConn.LocalAddr(), dstConn.RemoteAddr(), dst))
+				sb.WriteString(fmt.Sprintf(" Src: %s→ %s →  Dst: %s→ %s Orig: %s", srcConn.RemoteAddr(), srcConn.LocalAddr(), dstConn.LocalAddr(), dstConn.RemoteAddr(), dst))
 			} else {
 				sb.WriteString(id)
-				sb.WriteString(colors.Green(fmt.Sprintf(" Src: %s->%s", srcConn.RemoteAddr(), srcConn.LocalAddr())).String())
-				sb.WriteString(colors.Magenta(" -> ").String())
-				sb.WriteString(colors.Blue(fmt.Sprintf("Dst: %s->%s ", dstConn.LocalAddr(), dstConn.RemoteAddr())).String())
+				sb.WriteString(colors.Green(fmt.Sprintf(" Src: %s→ %s", srcConn.RemoteAddr(), srcConn.LocalAddr())).String())
+				sb.WriteString(colors.Magenta(" →  ").String())
+				sb.WriteString(colors.Blue(fmt.Sprintf("Dst: %s→ %s ", dstConn.LocalAddr(), dstConn.RemoteAddr())).String())
 				sb.WriteString(colors.BeigeBg(fmt.Sprintf("Orig Dst: %s", dst)).String())
 			}
 			sniffheader = append(sniffheader, sb.String())
@@ -235,10 +235,10 @@ func (ts *tproxyServer) Shutdown() {
 
 	select {
 	case <-done:
-		ts.pa.logger.Info().Msg("[tproxy] Server gracefully shutdown")
+		ts.pa.logger.Info().Msgf("[%s] Server gracefully shutdown", ts.pa.tproxyMode)
 		return
 	case <-time.After(timeout):
-		ts.pa.logger.Error().Msg("[tproxy] Server timed out waiting for connections to finish")
+		ts.pa.logger.Error().Msgf("[%s] Server timed out waiting for connections to finish", ts.pa.tproxyMode)
 		return
 	}
 }

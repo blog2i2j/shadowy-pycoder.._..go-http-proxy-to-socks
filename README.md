@@ -98,7 +98,7 @@ You can download the binary for your platform from [Releases](https://github.com
 Example:
 
 ```shell
-HPTS_RELEASE=v1.8.4; wget -v https://github.com/shadowy-pycoder/go-http-proxy-to-socks/releases/download/$HPTS_RELEASE/gohpts-$HPTS_RELEASE-linux-amd64.tar.gz -O gohpts && tar xvzf gohpts && mv -f gohpts-$HPTS_RELEASE-linux-amd64 gohpts && ./gohpts -h
+HPTS_RELEASE=v1.8.5; wget -v https://github.com/shadowy-pycoder/go-http-proxy-to-socks/releases/download/$HPTS_RELEASE/gohpts-$HPTS_RELEASE-linux-amd64.tar.gz -O gohpts && tar xvzf gohpts && mv -f gohpts-$HPTS_RELEASE-linux-amd64 gohpts && ./gohpts -h
 ```
 
 Alternatively, you can install it using `go install` command (requires Go [1.24](https://go.dev/doc/install) or later):
@@ -495,7 +495,7 @@ sudo env PATH=$PATH gohpts -d -T 8888 -M tproxy -sniff -body -auto -mark 100 -ar
 Run `bettercap` with this command (see [documentation](https://www.bettercap.org/)):
 
 ```shell
-sudo bettercap -eval "set net.probe on;set net.recon on;;set arp.spoof.fullduplex true;arp.spoof on"
+sudo bettercap -eval "net.probe on;net.recon on;set arp.spoof.fullduplex true;arp.spoof on"
 ```
 
 Check proxy logs for traffic from other devices from your LAN
