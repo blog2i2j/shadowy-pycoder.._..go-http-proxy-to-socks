@@ -65,6 +65,9 @@ Specify http server in proxy configuration of Postman
 - **Traffic sniffing**\
   Proxy is able to parse HTTP headers and TLS handshake metadata
 
+- **ARP spoofing**\
+  Proxy entire subnets with ARP spoofing approach
+
 - **DNS Leak Protection**\
   DNS resolution occurs on SOCKS5 server side.
 
@@ -98,7 +101,7 @@ You can download the binary for your platform from [Releases](https://github.com
 Example:
 
 ```shell
-HPTS_RELEASE=v1.8.5; wget -v https://github.com/shadowy-pycoder/go-http-proxy-to-socks/releases/download/$HPTS_RELEASE/gohpts-$HPTS_RELEASE-linux-amd64.tar.gz -O gohpts && tar xvzf gohpts && mv -f gohpts-$HPTS_RELEASE-linux-amd64 gohpts && ./gohpts -h
+HPTS_RELEASE=v1.9.0; wget -v https://github.com/shadowy-pycoder/go-http-proxy-to-socks/releases/download/$HPTS_RELEASE/gohpts-$HPTS_RELEASE-linux-amd64.tar.gz -O gohpts && tar xvzf gohpts && mv -f gohpts-$HPTS_RELEASE-linux-amd64 gohpts && ./gohpts -h
 ```
 
 Alternatively, you can install it using `go install` command (requires Go [1.24](https://go.dev/doc/install) or later):
@@ -165,7 +168,7 @@ Options:
   -T        Address of transparent proxy server (no HTTP)
   -M        Transparent proxy mode: (redirect, tproxy)
   -auto     Automatically setup iptables for transparent proxy (requires elevated privileges)
-  -arp      Automatically setup iptables to proxy ARP spoofed traffic (use tools like bettercap to perform actual attack)
+  -arpspoof Enable ARP spoof proxy for selected targets (Example: "targets 10.0.0.1,10.0.0.5-10,192.168.1.*,192.168.10.0/24;fullduplex false;debug true")
   -mark     Set mark for each packet sent through transparent proxy (Default: redirect 0, tproxy 100)
 ```
 
@@ -483,13 +486,28 @@ fi
 
 ### ARP spoofing
 
-`GoHPTS` can be used with tools like [Bettercap](https://github.com/bettercap/bettercap) to proxy ARP spoofed traffic.
+`GoHPTS` has in-built ARP spoofer that can be used to make all TCP talking devices of your LAN to use proxy server to connect to the Internet.
+This is achieved by adding `-arpspoof` flag with couple of parameters, separated by semicolon.
 
-Run the proxy with `-arp` flag
+Example:
 
 ```shell
 ssh remote -D 1080 -Nf
-sudo env PATH=$PATH gohpts -d -T 8888 -M tproxy -sniff -body -auto -mark 100 -arp
+sudo env PATH=$PATH gohpts -d -T 8888 -M tproxy -sniff -body -auto -mark 100 -arpspoof "targets 192.168.10.0/24;fullduplex true;debug true"
+```
+
+Proxy will scan for devices in subnet `192.168.10.0/24` and send them ARP packets to pretend to be a gateway, if `fullduplex` is true,
+proxy will send ARP packets to gateway as well to make it believe our proxy has each IP on the subnet.
+
+After proxy is stopped with `Ctrl+C`, it will automatically unspoof all targets.
+
+`GoHPTS` can also be used with tools like [Bettercap](https://github.com/bettercap/bettercap) to proxy ARP spoofed traffic.
+
+Run the proxy:
+
+```shell
+ssh remote -D 1080 -Nf
+sudo env PATH=$PATH gohpts -d -T 8888 -M tproxy -sniff -body -auto -mark 100
 ```
 
 Run `bettercap` with this command (see [documentation](https://www.bettercap.org/)):
