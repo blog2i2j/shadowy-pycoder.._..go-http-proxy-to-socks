@@ -34,6 +34,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/rs/zerolog"
 	"github.com/shadowy-pycoder/colors"
+	"github.com/shadowy-pycoder/mshark/arpspoof"
 	"github.com/shadowy-pycoder/mshark/layers"
 	"golang.org/x/net/proxy"
 )
@@ -66,6 +67,7 @@ var (
 	credsPattern = regexp.MustCompile(
 		`(?i)(?:"|')?(username|user|login|email|password|pass|pwd)(?:"|')?\s*[:=]\s*(?:"|')?([^\s"'&]+)`,
 	)
+	macPattern = regexp.MustCompile(`(?i)([a-z0-9_]+_[0-9a-f]{2}(?::[0-9a-f]{2}){2}|(?:[0-9a-f]{2}[:-]){5}[0-9a-f]{2})`)
 )
 
 // Hop-by-hop headers
@@ -97,7 +99,7 @@ type Config struct {
 	TProxyMode     string
 	Auto           bool
 	Mark           uint
-	ARP            bool
+	ARPSpoof       string
 	LogFilePath    string
 	Debug          bool
 	JSON           bool
@@ -121,7 +123,7 @@ type proxyapp struct {
 	tproxyMode     string
 	auto           bool
 	mark           uint
-	arp            bool
+	arpspoofer     *arpspoof.ARPSpoofer
 	user           string
 	pass           string
 	proxychain     chain
@@ -1396,52 +1398,48 @@ func (p *proxyapp) applyRedirectRules() string {
 	cmdForward.Stdout = os.Stdout
 	cmdForward.Stderr = os.Stderr
 	_ = cmdForward.Run()
-	if p.arp {
-		cmdClear := exec.Command("bash", "-c", `
-		set -ex
-		iptables -t filter -F GOHPTS 2>/dev/null || true
-		iptables -t filter -D FORWARD -j GOHPTS  2>/dev/null || true
-		iptables -t filter -X GOHPTS  2>/dev/null || true
-        `)
-		cmdClear.Stdout = os.Stdout
-		cmdClear.Stderr = os.Stderr
-		if err := cmdClear.Run(); err != nil {
-			p.logger.Fatal().Err(err).Msg("Failed while configuring iptables. Are you root?")
-		}
-		iface, err := getDefaultInterface()
-		if err != nil {
-			p.logger.Fatal().Err(err).Msg("failed getting default network interface")
-		}
-		cmdForward := exec.Command("bash", "-c", fmt.Sprintf(`
-		set -ex
-		iptables -t filter -N GOHPTS 2>/dev/null
-		iptables -t filter -F GOHPTS
-		iptables -t filter -A FORWARD -j GOHPTS
-		iptables -t filter -A GOHPTS -i %s -j ACCEPT
-		iptables -t filter -A GOHPTS -o %s -j ACCEPT
-		`, iface.Name, iface.Name))
-		cmdForward.Stdout = os.Stdout
-		cmdForward.Stderr = os.Stderr
-		if err := cmdForward.Run(); err != nil {
-			p.logger.Fatal().Err(err).Msg("Failed while configuring iptables. Are you root?")
-		}
+	cmdClearForward := exec.Command("bash", "-c", `
+	set -ex
+	iptables -t filter -F GOHPTS 2>/dev/null || true
+	iptables -t filter -D FORWARD -j GOHPTS  2>/dev/null || true
+	iptables -t filter -X GOHPTS  2>/dev/null || true
+	`)
+	cmdClearForward.Stdout = os.Stdout
+	cmdClearForward.Stderr = os.Stderr
+	if err := cmdClearForward.Run(); err != nil {
+		p.logger.Fatal().Err(err).Msg("Failed while configuring iptables. Are you root?")
+	}
+	iface, err := getDefaultInterface()
+	if err != nil {
+		p.logger.Fatal().Err(err).Msg("failed getting default network interface")
+	}
+	cmdForwardFilter := exec.Command("bash", "-c", fmt.Sprintf(`
+	set -ex
+	iptables -t filter -N GOHPTS 2>/dev/null
+	iptables -t filter -F GOHPTS
+	iptables -t filter -A FORWARD -j GOHPTS
+	iptables -t filter -A GOHPTS -i %s -j ACCEPT
+	iptables -t filter -A GOHPTS -o %s -j ACCEPT
+	`, iface.Name, iface.Name))
+	cmdForwardFilter.Stdout = os.Stdout
+	cmdForwardFilter.Stderr = os.Stderr
+	if err := cmdForwardFilter.Run(); err != nil {
+		p.logger.Fatal().Err(err).Msg("Failed while configuring iptables. Are you root?")
 	}
 	return string(output)
 }
 
 func (p *proxyapp) clearRedirectRules(output string) error {
-	if p.arp {
-		cmdClear := exec.Command("bash", "-c", `
-		set -ex
-		iptables -t filter -F GOHPTS 2>/dev/null || true
-		iptables -t filter -D FORWARD -j GOHPTS  2>/dev/null || true
-		iptables -t filter -X GOHPTS  2>/dev/null || true
-        `)
-		cmdClear.Stdout = os.Stdout
-		cmdClear.Stderr = os.Stderr
-		if err := cmdClear.Run(); err != nil {
-			p.logger.Fatal().Err(err).Msg("Failed while configuring iptables. Are you root?")
-		}
+	cmdClear := exec.Command("bash", "-c", `
+	set -ex
+	iptables -t filter -F GOHPTS 2>/dev/null || true
+	iptables -t filter -D FORWARD -j GOHPTS  2>/dev/null || true
+	iptables -t filter -X GOHPTS  2>/dev/null || true
+	`)
+	cmdClear.Stdout = os.Stdout
+	cmdClear.Stderr = os.Stderr
+	if err := cmdClear.Run(); err != nil {
+		p.logger.Fatal().Err(err).Msg("Failed while configuring iptables. Are you root?")
 	}
 	var cmd *exec.Cmd
 	switch p.tproxyMode {
@@ -1481,6 +1479,9 @@ func (p *proxyapp) Run() {
 	quit := make(chan os.Signal, 1)
 	p.closeConn = make(chan bool)
 	signal.Notify(quit, os.Interrupt)
+	if p.arpspoofer != nil {
+		go p.arpspoofer.Start()
+	}
 	var tproxyServer *tproxyServer
 	if p.tproxyAddr != "" {
 		tproxyServer = newTproxyServer(p)
@@ -1508,6 +1509,12 @@ func (p *proxyapp) Run() {
 	if p.httpServer != nil {
 		go func() {
 			<-quit
+			if p.arpspoofer != nil {
+				err := p.arpspoofer.Stop()
+				if err != nil {
+					p.logger.Error().Err(err).Msg("Failed stopping arp spoofer")
+				}
+			}
 			if p.auto {
 				err := p.clearRedirectRules(output)
 				if err != nil {
@@ -1550,6 +1557,12 @@ func (p *proxyapp) Run() {
 	} else {
 		go func() {
 			<-quit
+			if p.arpspoofer != nil {
+				err := p.arpspoofer.Stop()
+				if err != nil {
+					p.logger.Error().Err(err).Msg("Failed stopping arp spoofer")
+				}
+			}
 			if p.auto {
 				err := p.clearRedirectRules(output)
 				if err != nil {
@@ -1706,6 +1719,9 @@ func New(conf *Config) *proxyapp {
 			result = domainPattern.ReplaceAllStringFunc(result, func(match string) string {
 				return colors.Yellow(match).String()
 			})
+			result = macPattern.ReplaceAllStringFunc(result, func(match string) string {
+				return colors.Yellow(match).String()
+			})
 			return result
 		}
 
@@ -1819,11 +1835,41 @@ func New(conf *Config) *proxyapp {
 	if p.mark == 0 && p.tproxyMode == "tproxy" {
 		p.mark = 100
 	}
-	p.arp = conf.ARP
-	if p.arp && runtime.GOOS != "linux" {
-		p.logger.Fatal().Msg("ARP setup is available only for linux system")
-	} else if p.arp && !p.auto {
-		p.logger.Fatal().Msg("ARP setup requires auto configuration")
+	if conf.ARPSpoof != "" {
+		if runtime.GOOS != "linux" {
+			p.logger.Fatal().Msg("ARP spoof setup is available only for linux system")
+		}
+		if !p.auto {
+			p.logger.Warn().Msg("ARP spoof setup requires iptables configuration")
+		}
+		asc := &arpspoof.ARPSpoofConfig{Logger: p.logger}
+		errMsg := `Failed parsing arp options. Example: "targets 10.0.0.1,10.0.0.5-10,192.168.1.*,192.168.10.0/24;fullduplex false;debug true"`
+		for opt := range strings.SplitSeq(strings.ToLower(conf.ARPSpoof), ";") {
+			keyval := strings.SplitN(strings.Trim(opt, " "), " ", 2)
+			if len(keyval) < 2 {
+				p.logger.Fatal().Msg(errMsg)
+			}
+			key := keyval[0]
+			val := keyval[1]
+			switch key {
+			case "targets":
+				asc.Targets = val
+			case "fullduplex":
+				if val == "true" {
+					asc.FullDuplex = true
+				}
+			case "debug":
+				if val == "true" {
+					asc.Debug = true
+				}
+			default:
+				p.logger.Fatal().Msg(errMsg)
+			}
+		}
+		p.arpspoofer, err = arpspoof.NewARPSpoofer(asc)
+		if err != nil {
+			p.logger.Fatal().Err(err).Msg("Failed creating arp spoofer")
+		}
 	}
 	var addrHTTP, addrSOCKS, certFile, keyFile string
 	if conf.ServerConfPath != "" {
