@@ -79,7 +79,7 @@ func (ts *tproxyServer) serve() {
 			case <-ts.quit:
 				return
 			default:
-				ts.pa.logger.Error().Err(err).Msg("")
+				ts.pa.logger.Error().Err(err).Msg("Failed accepting connection")
 			}
 		} else {
 			ts.wg.Add(1)
@@ -237,7 +237,7 @@ func (ts *tproxyServer) Shutdown() {
 	case <-done:
 		ts.pa.logger.Info().Msgf("[%s] Server gracefully shutdown", ts.pa.tproxyMode)
 		return
-	case <-time.After(timeout):
+	case <-time.After(shutdownTimeout):
 		ts.pa.logger.Error().Msgf("[%s] Server timed out waiting for connections to finish", ts.pa.tproxyMode)
 		return
 	}

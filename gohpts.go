@@ -40,9 +40,10 @@ import (
 )
 
 const (
-	readTimeout              time.Duration = 3 * time.Second
-	writeTimeout             time.Duration = 3 * time.Second
+	readTimeout              time.Duration = 30 * time.Second
+	writeTimeout             time.Duration = 30 * time.Second
 	timeout                  time.Duration = 10 * time.Second
+	shutdownTimeout          time.Duration = 30 * time.Second
 	hopTimeout               time.Duration = 3 * time.Second
 	flushTimeout             time.Duration = 10 * time.Millisecond
 	availProxyUpdateInterval time.Duration = 30 * time.Second
@@ -589,12 +590,15 @@ func (p *proxyapp) updateSocksList() {
 		if err != nil && !errors.Is(err, io.EOF) { // check for EOF to include localhost SOCKS5 in the chain
 			p.logger.Error().Err(err).Msgf("%s Unable to connect to %s", ctl, pr.Address)
 			failed++
-			continue
-		} else {
 			if conn != nil {
 				conn.Close()
 			}
+			continue
+		} else {
 			p.availProxyList = append(p.availProxyList, proxyEntry{Address: pr.Address, Username: pr.Username, Password: pr.Password})
+			if conn != nil {
+				conn.Close()
+			}
 			break
 		}
 	}
@@ -619,6 +623,9 @@ func (p *proxyapp) updateSocksList() {
 		conn, err := dialer.(proxy.ContextDialer).DialContext(ctx, "tcp", pr.Address)
 		if err != nil {
 			p.logger.Error().Err(err).Msgf("%s Unable to connect to %s", ctl, pr.Address)
+			if conn != nil {
+				conn.Close()
+			}
 			continue
 		}
 		conn.Close()
@@ -1094,6 +1101,9 @@ readLoop:
 		default:
 			er := src.SetReadDeadline(time.Now().Add(readTimeout))
 			if er != nil {
+				if errors.Is(er, net.ErrClosed) {
+					break readLoop
+				}
 				err = er
 				break readLoop
 			}
@@ -1101,6 +1111,9 @@ readLoop:
 			if nr > 0 {
 				er := dst.SetWriteDeadline(time.Now().Add(writeTimeout))
 				if er != nil {
+					if errors.Is(er, net.ErrClosed) {
+						break readLoop
+					}
 					err = er
 					break readLoop
 				}
@@ -1120,7 +1133,9 @@ readLoop:
 				written += int64(nw)
 				if ew != nil {
 					if ne, ok := ew.(net.Error); ok && ne.Timeout() {
-						err = ne
+						break readLoop
+					}
+					if errors.Is(ew, net.ErrClosed) {
 						break readLoop
 					}
 				}
@@ -1130,13 +1145,17 @@ readLoop:
 				}
 			}
 			if er != nil {
-				if ne, ok := err.(net.Error); ok && ne.Timeout() {
-					err = er
+				if ne, ok := er.(net.Error); ok && ne.Timeout() {
+					break readLoop
+				}
+				if errors.Is(er, net.ErrClosed) {
 					break readLoop
 				}
 				if er == io.EOF {
 					break readLoop
 				}
+				err = er
+				break readLoop
 			}
 		}
 	}
@@ -1158,7 +1177,10 @@ func (p *proxyapp) transfer(
 	if err != nil {
 		p.logger.Error().Err(err).Msgf("Error during copy from %s to %s: %v", srcName, destName, err)
 	}
-	p.logger.Debug().Msgf("copied %s from %s to %s", prettifyBytes(n), srcName, destName)
+	if n > 0 {
+		p.logger.Debug().Msgf("copied %s from %s to %s", prettifyBytes(n), srcName, destName)
+	}
+	src.Close()
 }
 
 func parseProxyAuth(auth string) (username, password string, ok bool) {
@@ -1527,7 +1549,7 @@ func (p *proxyapp) Run() {
 				tproxyServer.Shutdown()
 			}
 			p.logger.Info().Msg("Server is shutting down...")
-			ctx, cancel := context.WithTimeout(context.Background(), timeout)
+			ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 
 			defer cancel()
 			p.httpServer.SetKeepAlivesEnabled(false)
