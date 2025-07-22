@@ -1146,7 +1146,7 @@ readLoop:
 			}
 			if er != nil {
 				if ne, ok := er.(net.Error); ok && ne.Timeout() {
-					break readLoop
+					continue // support long-lived connections (SSE, WebSockets, etc)
 				}
 				if errors.Is(er, net.ErrClosed) {
 					break readLoop
