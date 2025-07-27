@@ -4,13 +4,11 @@
 package gohpts
 
 import (
-	"bufio"
 	"context"
 	"errors"
 	"fmt"
 	"net"
 	"net/netip"
-	"os"
 	"strings"
 	"sync"
 	"syscall"
@@ -19,6 +17,7 @@ import (
 
 	"github.com/shadowy-pycoder/colors"
 	"github.com/shadowy-pycoder/mshark/layers"
+	"github.com/shadowy-pycoder/mshark/network"
 	"golang.org/x/net/proxy"
 	"golang.org/x/sys/unix"
 )
@@ -261,21 +260,5 @@ func getBaseDialer(timeout time.Duration, mark uint) *net.Dialer {
 }
 
 func getDefaultInterface() (*net.Interface, error) {
-	f, err := os.Open("/proc/net/route")
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-
-	defaultInterface := ""
-	scanner := bufio.NewScanner(f)
-	for scanner.Scan() {
-		line := scanner.Text()
-		fields := strings.Fields(line)
-		if len(fields) >= 2 && fields[1] == "00000000" {
-			defaultInterface = fields[0]
-			break
-		}
-	}
-	return net.InterfaceByName(defaultInterface)
+	return network.GetDefaultInterface()
 }
