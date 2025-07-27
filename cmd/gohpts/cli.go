@@ -8,6 +8,7 @@ import (
 	"slices"
 
 	gohpts "github.com/shadowy-pycoder/go-http-proxy-to-socks"
+	"github.com/shadowy-pycoder/mshark/network"
 	"golang.org/x/term"
 )
 
@@ -33,15 +34,17 @@ Options:
   -h        Show this help message and exit
   -v        Show version and build information
   -D        Run as a daemon (provide -logfile to see logs)
+  -I        Display list of network interfaces and exit
 
   Proxy:
-  -l        Address of HTTP proxy server (default "127.0.0.1:8080")
-  -s        Address of SOCKS5 proxy server (default "127.0.0.1:1080")
+  -l        Address of HTTP proxy server (Default: "127.0.0.1:8080")
+  -s        Address of SOCKS5 proxy server (Default: "127.0.0.1:1080")
   -c        Path to certificate PEM encoded file
   -k        Path to private key PEM encoded file
   -U        User for HTTP proxy (basic auth). This flag invokes prompt for password (not echoed to terminal)
   -u        User for SOCKS5 proxy authentication. This flag invokes prompt for password (not echoed to terminal)
-  -f        Path to server configuration file in YAML format (overrides other proxy flags)
+  -i        Bind proxy to specific network interface (either by interface name or index)
+  -f        Path to server configuration file in YAML format (overrides proxy flags above)
 
   Logs:
   -d        Show logs in DEBUG mode
@@ -90,6 +93,15 @@ func root(args []string) error {
 		"",
 		"Path to server configuration file in YAML format (overrides other proxy flags)",
 	)
+	flags.StringVar(&conf.Interface, "i", "", "Bind proxy to specific network interface")
+	flags.BoolFunc("I", "Display list of network interfaces and exit", func(flagValue string) error {
+		if err := network.DisplayInterfaces(); err != nil {
+			fmt.Fprintf(os.Stderr, "%s: %v\n", app, err)
+			os.Exit(2)
+		}
+		os.Exit(0)
+		return nil
+	})
 	daemon := flags.Bool("D", false, "Run as a daemon (provide -logfile to see logs)")
 	if runtime.GOOS == tproxyOS {
 		flags.StringVar(&conf.TProxy, "t", "", "Address of transparent proxy server (it starts along with HTTP proxy server)")
@@ -157,7 +169,7 @@ func root(args []string) error {
 	if seen["T"] {
 		for _, da := range []string{"U", "c", "k", "l"} {
 			if seen[da] {
-				return fmt.Errorf("-T flag only works with -s, -u, -f, -M, -d, -D, -logfile, -sniff, -snifflog and -j flags")
+				return fmt.Errorf("-T flag does not work with -U, -c, -k, -l flags")
 			}
 		}
 		if !seen["M"] {
@@ -180,12 +192,9 @@ func root(args []string) error {
 		}
 	}
 	if seen["f"] {
-		for _, da := range []string{"s", "u", "U", "c", "k", "l"} {
+		for _, da := range []string{"s", "u", "U", "c", "k", "l", "i"} {
 			if seen[da] {
-				if runtime.GOOS == tproxyOS {
-					return fmt.Errorf("-f flag only works with -t, -T, -M, -d, -D, -logfile, -sniff, -snifflog and -j flags")
-				}
-				return fmt.Errorf("-f flag only works with -d, -D, -logfile, -sniff, -snifflog and -j flags")
+				return fmt.Errorf("-f flag does not work with other proxy flags specified")
 			}
 		}
 	}

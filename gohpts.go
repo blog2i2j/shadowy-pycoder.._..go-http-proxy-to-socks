@@ -36,6 +36,7 @@ import (
 	"github.com/shadowy-pycoder/colors"
 	"github.com/shadowy-pycoder/mshark/arpspoof"
 	"github.com/shadowy-pycoder/mshark/layers"
+	"github.com/shadowy-pycoder/mshark/network"
 	"golang.org/x/net/proxy"
 )
 
@@ -94,6 +95,7 @@ type Config struct {
 	ServerPass     string
 	CertFile       string
 	KeyFile        string
+	Interface      string
 	ServerConfPath string
 	TProxy         string
 	TProxyOnly     string
@@ -120,6 +122,7 @@ type proxyapp struct {
 	certFile       string
 	keyFile        string
 	httpServerAddr string
+	iface          *net.Interface
 	tproxyAddr     string
 	tproxyMode     string
 	auto           bool
@@ -1349,7 +1352,7 @@ func (p *proxyapp) applyRedirectRules() string {
         iptables -t mangle -X GOHPTS 2>/dev/null || true
 
         ip rule del fwmark 1 lookup 100 2>/dev/null || true
-        ip route flush table 100 || true
+        ip route flush table 100 2>/dev/null || true
         `)
 		cmdClear.Stdout = os.Stdout
 		cmdClear.Stderr = os.Stderr
@@ -1431,9 +1434,14 @@ func (p *proxyapp) applyRedirectRules() string {
 	if err := cmdClearForward.Run(); err != nil {
 		p.logger.Fatal().Err(err).Msg("Failed while configuring iptables. Are you root?")
 	}
-	iface, err := getDefaultInterface()
-	if err != nil {
-		p.logger.Fatal().Err(err).Msg("failed getting default network interface")
+	var iface *net.Interface
+	if p.iface != nil {
+		iface = p.iface
+	} else {
+		iface, err = getDefaultInterface()
+		if err != nil {
+			p.logger.Fatal().Err(err).Msg("failed getting default network interface")
+		}
 	}
 	cmdForwardFilter := exec.Command("bash", "-c", fmt.Sprintf(`
 	set -ex
@@ -1487,7 +1495,7 @@ func (p *proxyapp) clearRedirectRules(output string) error {
         iptables -t mangle -X GOHPTS 2>/dev/null || true
 
         ip rule del fwmark 1 lookup 100 2>/dev/null || true
-        ip route flush table 100 || true
+        ip route flush table 100 2>/dev/null || true
         sysctl -w net.ipv4.ip_forward=%s
         `, output))
 		cmd.Stdout = os.Stdout
@@ -1629,11 +1637,12 @@ func (pe proxyEntry) String() string {
 }
 
 type server struct {
-	Address  string `yaml:"address"`
-	Username string `yaml:"username,omitempty"`
-	Password string `yaml:"password,omitempty"`
-	CertFile string `yaml:"cert_file,omitempty"`
-	KeyFile  string `yaml:"key_file,omitempty"`
+	Address   string `yaml:"address"`
+	Interface string `yaml:"interface,omitempty"`
+	Username  string `yaml:"username,omitempty"`
+	Password  string `yaml:"password,omitempty"`
+	CertFile  string `yaml:"cert_file,omitempty"`
+	KeyFile   string `yaml:"key_file,omitempty"`
 }
 type chain struct {
 	Type   string `yaml:"type"`
@@ -1646,30 +1655,34 @@ type serverConfig struct {
 	Server    server       `yaml:"server"`
 }
 
-func getFullAddress(v string, all bool) (string, error) {
+func getFullAddress(v, ip string, all bool) (string, error) {
 	if v == "" {
 		return "", nil
 	}
-	ip := "127.0.0.1"
+	ipAddr := "127.0.0.1"
 	if all {
-		ip = "0.0.0.0"
+		ipAddr = "0.0.0.0"
 	}
 	if port, err := strconv.Atoi(v); err == nil {
-		return fmt.Sprintf("%s:%d", ip, port), nil
+		if ip != "" {
+			return fmt.Sprintf("%s:%d", ip, port), nil
+		} else {
+			return fmt.Sprintf("%s:%d", ipAddr, port), nil
+		}
 	}
 	host, port, err := net.SplitHostPort(v)
 	if err != nil {
 		return "", err
 	}
-	if host != "" && port == "" {
+	if port == "" {
 		return "", fmt.Errorf("port is missing")
 	}
-	if host != "" && port != "" {
-		return v, nil
-	} else if port != "" {
+	if ip != "" {
 		return fmt.Sprintf("%s:%s", ip, port), nil
+	} else if host == "" {
+		return fmt.Sprintf("%s:%s", ipAddr, port), nil
 	}
-	return "", fmt.Errorf("failed parsing address")
+	return fmt.Sprintf("%s:%s", host, port), nil
 }
 
 func expandPath(p string) string {
@@ -1680,6 +1693,17 @@ func expandPath(p string) string {
 		}
 	}
 	return p
+}
+
+func getAddressFromInterface(iface *net.Interface) (string, error) {
+	if iface == nil {
+		return "", nil
+	}
+	prefix, err := network.GetIPv4PrefixFromInterface(iface)
+	if err != nil {
+		return "", err
+	}
+	return prefix.Addr().String(), nil
 }
 
 func New(conf *Config) *proxyapp {
@@ -1814,42 +1838,34 @@ func New(conf *Config) *proxyapp {
 		conf.TProxy = ""
 		conf.TProxyOnly = ""
 		conf.TProxyMode = ""
-		p.logger.Warn().Msgf("[%s] functionality only available on linux system", conf.TProxyMode)
+		p.logger.Warn().Msgf("[%s] functionality only available on linux systems", conf.TProxyMode)
 	}
 	p.tproxyMode = conf.TProxyMode
 	tproxyonly := conf.TProxyOnly != ""
+	var tAddr string
 	if tproxyonly {
-		if p.tproxyMode != "" {
-			p.tproxyAddr, err = getFullAddress(conf.TProxyOnly, true)
-			if err != nil {
-				p.logger.Fatal().Err(err).Msg("")
-			}
-		} else {
-			p.tproxyAddr, err = getFullAddress(conf.TProxyOnly, false)
-			if err != nil {
-				p.logger.Fatal().Err(err).Msg("")
-			}
+		tAddr = conf.TProxyOnly
+	} else {
+		tAddr = conf.TProxy
+	}
+	if p.tproxyMode != "" {
+		p.tproxyAddr, err = getFullAddress(tAddr, "", true)
+		if err != nil {
+			p.logger.Fatal().Err(err).Msg("")
 		}
 	} else {
-		if p.tproxyMode != "" {
-			p.tproxyAddr, err = getFullAddress(conf.TProxy, true)
-			if err != nil {
-				p.logger.Fatal().Err(err).Msg("")
-			}
-		} else {
-			p.tproxyAddr, err = getFullAddress(conf.TProxy, false)
-			if err != nil {
-				p.logger.Fatal().Err(err).Msg("")
-			}
+		p.tproxyAddr, err = getFullAddress(tAddr, "", false)
+		if err != nil {
+			p.logger.Fatal().Err(err).Msg("")
 		}
 	}
 	p.auto = conf.Auto
 	if p.auto && runtime.GOOS != "linux" {
-		p.logger.Fatal().Msg("Auto setup is available only for linux system")
+		p.logger.Fatal().Msg("Auto setup is available only on linux systems")
 	}
 	p.mark = conf.Mark
 	if p.mark > 0 && runtime.GOOS != "linux" {
-		p.logger.Fatal().Msg("SO_MARK is available only for linux system")
+		p.logger.Fatal().Msg("SO_MARK is available only on linux systems")
 	}
 	if p.mark > 0xFFFFFFFF {
 		p.logger.Fatal().Msg("SO_MARK is out of range")
@@ -1857,58 +1873,40 @@ func New(conf *Config) *proxyapp {
 	if p.mark == 0 && p.tproxyMode == "tproxy" {
 		p.mark = 100
 	}
-	if conf.ARPSpoof != "" {
-		if runtime.GOOS != "linux" {
-			p.logger.Fatal().Msg("ARP spoof setup is available only for linux system")
-		}
-		if !p.auto {
-			p.logger.Warn().Msg("ARP spoof setup requires iptables configuration")
-		}
-		asc := &arpspoof.ARPSpoofConfig{Logger: p.logger}
-		errMsg := `Failed parsing arp options. Example: "targets 10.0.0.1,10.0.0.5-10,192.168.1.*,192.168.10.0/24;fullduplex false;debug true"`
-		for opt := range strings.SplitSeq(strings.ToLower(conf.ARPSpoof), ";") {
-			keyval := strings.SplitN(strings.Trim(opt, " "), " ", 2)
-			if len(keyval) < 2 {
-				p.logger.Fatal().Msg(errMsg)
-			}
-			key := keyval[0]
-			val := keyval[1]
-			switch key {
-			case "targets":
-				asc.Targets = val
-			case "fullduplex":
-				if val == "true" {
-					asc.FullDuplex = true
-				}
-			case "debug":
-				if val == "true" {
-					asc.Debug = true
-				}
-			default:
-				p.logger.Fatal().Msg(errMsg)
-			}
-		}
-		p.arpspoofer, err = arpspoof.NewARPSpoofer(asc)
-		if err != nil {
-			p.logger.Fatal().Err(err).Msg("Failed creating arp spoofer")
-		}
-	}
 	var addrHTTP, addrSOCKS, certFile, keyFile string
 	if conf.ServerConfPath != "" {
 		var sconf serverConfig
 		yamlFile, err := os.ReadFile(expandPath(conf.ServerConfPath))
 		if err != nil {
-			p.logger.Fatal().Err(err).Msg("[server config] Parsing failed")
+			p.logger.Fatal().Err(err).Msg("[yaml config] Parsing failed")
 		}
 		err = yaml.Unmarshal(yamlFile, &sconf)
 		if err != nil {
-			p.logger.Fatal().Err(err).Msg("[server config] Parsing failed")
+			p.logger.Fatal().Err(err).Msg("[yaml config] Parsing failed")
 		}
 		if !tproxyonly {
 			if sconf.Server.Address == "" {
-				p.logger.Fatal().Err(err).Msg("[server config] Server address is empty")
+				p.logger.Fatal().Err(err).Msg("[yaml config] Server address is empty")
 			}
-			addrHTTP, err = getFullAddress(sconf.Server.Address, false)
+			if sconf.Server.Interface != "" && sconf.Server.Interface != "any" && conf.Interface != "0" {
+				p.iface, err = net.InterfaceByName(sconf.Server.Interface)
+				if err != nil {
+					if ifIdx, err := strconv.Atoi(sconf.Server.Interface); err == nil {
+						p.iface, err = net.InterfaceByIndex(ifIdx)
+						if err != nil {
+							p.logger.Warn().Err(err).Msgf("Failed binding to %s, using default interface", sconf.Server.Interface)
+						}
+					} else {
+						p.logger.Warn().Err(err).Msgf("Failed binding to %s, using default interface", sconf.Server.Interface)
+					}
+				}
+			}
+			iAddr, err := getAddressFromInterface(p.iface)
+			if err != nil {
+				p.iface = nil
+				p.logger.Warn().Err(err).Msgf("Failed binding to %s, using default interface", sconf.Server.Interface)
+			}
+			addrHTTP, err = getFullAddress(sconf.Server.Address, iAddr, false)
 			if err != nil {
 				p.logger.Fatal().Err(err).Msg("")
 			}
@@ -1922,11 +1920,11 @@ func New(conf *Config) *proxyapp {
 		p.proxylist = sconf.ProxyList
 		p.availProxyList = make([]proxyEntry, 0, len(p.proxylist))
 		if len(p.proxylist) == 0 {
-			p.logger.Fatal().Msg("[server config] Proxy list is empty")
+			p.logger.Fatal().Msg("[yaml config] Proxy list is empty")
 		}
 		seen := make(map[string]struct{})
 		for idx, pr := range p.proxylist {
-			addr, err := getFullAddress(pr.Address, false)
+			addr, err := getFullAddress(pr.Address, "", false)
 			if err != nil {
 				p.logger.Fatal().Err(err).Msg("")
 			}
@@ -1934,18 +1932,36 @@ func New(conf *Config) *proxyapp {
 				seen[addr] = struct{}{}
 				p.proxylist[idx].Address = addr
 			} else {
-				p.logger.Fatal().Msgf("[server config] Duplicate entry `%s`", addr)
+				p.logger.Fatal().Msgf("[yaml config] Duplicate entry `%s`", addr)
 			}
 		}
 		addrSOCKS = p.printProxyChain(p.proxylist)
 		chainType := p.proxychain.Type
 		if !slices.Contains(supportedChainTypes, chainType) {
-			p.logger.Fatal().Msgf("[server config] Chain type `%s` is not supported", chainType)
+			p.logger.Fatal().Msgf("[yaml config] Chain type `%s` is not supported", chainType)
 		}
 		p.rrIndexReset = rrIndexMax
 	} else {
 		if !tproxyonly {
-			addrHTTP, err = getFullAddress(conf.AddrHTTP, false)
+			if conf.Interface != "" && conf.Interface != "any" && conf.Interface != "0" {
+				p.iface, err = net.InterfaceByName(conf.Interface)
+				if err != nil {
+					if ifIdx, err := strconv.Atoi(conf.Interface); err == nil {
+						p.iface, err = net.InterfaceByIndex(ifIdx)
+						if err != nil {
+							p.logger.Warn().Err(err).Msgf("Failed binding to %s, using default interface", conf.Interface)
+						}
+					} else {
+						p.logger.Warn().Err(err).Msgf("Failed binding to %s, using default interface", conf.Interface)
+					}
+				}
+			}
+			iAddr, err := getAddressFromInterface(p.iface)
+			if err != nil {
+				p.logger.Warn().Err(err).Msgf("Failed binding to %s, using default interface", conf.Interface)
+				p.iface = nil
+			}
+			addrHTTP, err = getFullAddress(conf.AddrHTTP, iAddr, false)
 			if err != nil {
 				p.logger.Fatal().Err(err).Msg("")
 			}
@@ -1955,7 +1971,7 @@ func New(conf *Config) *proxyapp {
 			p.user = conf.ServerUser
 			p.pass = conf.ServerPass
 		}
-		addrSOCKS, err = getFullAddress(conf.AddrSOCKS, false)
+		addrSOCKS, err = getFullAddress(conf.AddrSOCKS, "", false)
 		if err != nil {
 			p.logger.Fatal().Err(err).Msg("")
 		}
@@ -2009,6 +2025,45 @@ func New(conf *Config) *proxyapp {
 				return http.ErrUseLastResponse
 			},
 			Timeout: timeout,
+		}
+	}
+	if conf.ARPSpoof != "" {
+		if runtime.GOOS != "linux" {
+			p.logger.Fatal().Msg("ARP spoof setup is available only on linux systems")
+		}
+		if !p.auto {
+			p.logger.Warn().Msg("ARP spoof setup requires iptables configuration")
+		}
+		asc := &arpspoof.ARPSpoofConfig{Logger: p.logger}
+		errMsg := `Failed parsing arp options. Example: "targets 10.0.0.1,10.0.0.5-10,192.168.1.*,192.168.10.0/24;fullduplex false;debug true"`
+		for opt := range strings.SplitSeq(strings.ToLower(conf.ARPSpoof), ";") {
+			keyval := strings.SplitN(strings.Trim(opt, " "), " ", 2)
+			if len(keyval) < 2 {
+				p.logger.Fatal().Msg(errMsg)
+			}
+			key := keyval[0]
+			val := keyval[1]
+			switch key {
+			case "targets":
+				asc.Targets = val
+			case "fullduplex":
+				if val == "true" {
+					asc.FullDuplex = true
+				}
+			case "debug":
+				if val == "true" {
+					asc.Debug = true
+				}
+			default:
+				p.logger.Fatal().Msg(errMsg)
+			}
+		}
+		if p.iface != nil {
+			asc.Interface = p.iface.Name
+		}
+		p.arpspoofer, err = arpspoof.NewARPSpoofer(asc)
+		if err != nil {
+			p.logger.Fatal().Err(err).Msg("Failed creating arp spoofer")
 		}
 	}
 	if conf.ServerConfPath != "" {

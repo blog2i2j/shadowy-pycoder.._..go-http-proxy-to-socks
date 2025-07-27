@@ -101,7 +101,7 @@ You can download the binary for your platform from [Releases](https://github.com
 Example:
 
 ```shell
-HPTS_RELEASE=v1.9.2; wget -v https://github.com/shadowy-pycoder/go-http-proxy-to-socks/releases/download/$HPTS_RELEASE/gohpts-$HPTS_RELEASE-linux-amd64.tar.gz -O gohpts && tar xvzf gohpts && mv -f gohpts-$HPTS_RELEASE-linux-amd64 gohpts && ./gohpts -h
+GOHPTS_RELEASE=v1.9.3; wget -v https://github.com/shadowy-pycoder/go-http-proxy-to-socks/releases/download/$GOHPTS_RELEASE/gohpts-$GOHPTS_RELEASE-linux-amd64.tar.gz -O gohpts && tar xvzf gohpts && mv -f gohpts-$GOHPTS_RELEASE-linux-amd64 gohpts && ./gohpts -h
 ```
 
 Alternatively, you can install it using `go install` command (requires Go [1.24](https://go.dev/doc/install) or later):
@@ -142,15 +142,17 @@ Options:
   -h        Show this help message and exit
   -v        Show version and build information
   -D        Run as a daemon (provide -logfile to see logs)
+  -I        Display list of network interfaces and exit
 
   Proxy:
-  -l        Address of HTTP proxy server (default "127.0.0.1:8080")
-  -s        Address of SOCKS5 proxy server (default "127.0.0.1:1080")
+  -l        Address of HTTP proxy server (Default: "127.0.0.1:8080")
+  -s        Address of SOCKS5 proxy server (Default: "127.0.0.1:1080")
   -c        Path to certificate PEM encoded file
   -k        Path to private key PEM encoded file
   -U        User for HTTP proxy (basic auth). This flag invokes prompt for password (not echoed to terminal)
   -u        User for SOCKS5 proxy authentication. This flag invokes prompt for password (not echoed to terminal)
-  -f        Path to server configuration file in YAML format (overrides other proxy flags)
+  -i        Bind proxy to specific network interface (either by interface name or index)
+  -f        Path to server configuration file in YAML format (overrides proxy flags above)
 
   Logs:
   -d        Show logs in DEBUG mode
@@ -279,7 +281,8 @@ proxy_list:
   - address: 127.0.0.1:1081
   - address: :1082 # empty host means localhost
 server:
-  address: 127.0.0.1:8080 # the only required field in this section
+  address: 127.0.0.1:8080 # the only required field in this section (ignored when -T flag specified)
+  interface: "eth0" # if specified, overrides server address
   # these are for adding basic authentication
   username: username
   password: password

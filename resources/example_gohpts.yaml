@@ -1,9 +1,9 @@
 # Explanations for chains taken from /etc/proxychains4.conf
-  
+
 # strict - Each connection will be done via chained proxies
 # all proxies chained in the order as they appear in the list
 # all proxies must be online to play in chain
-  
+
 # dynamic - Each connection will be done via chained proxies
 # all proxies chained in the order as they appear in the list
 # at least one proxy must be online to play in chain
@@ -35,8 +35,9 @@ proxy_list:
   - address: :1082 # empty host means localhost
 server:
   address: 127.0.0.1:8080 # the only required field in this section (ignored when -T flag specified)
+  interface: "eth0" # if specified, overrides server address
   # these are for adding basic authentication
-  username: username 
+  username: username
   password: password
   # comment out these to use HTTP instead of HTTPS
   cert_file: ~/local.crt
