@@ -1,0 +1,406 @@
+package gohpts
+
+import (
+	"bufio"
+	"bytes"
+	"fmt"
+	"math/rand"
+	"net"
+	"net/http"
+	"regexp"
+	"strings"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/shadowy-pycoder/colors"
+	"github.com/shadowy-pycoder/mshark/layers"
+)
+
+var (
+	ipPortPattern = regexp.MustCompile(
+		`\b(?:\d{1,3}\.){3}\d{1,3}(?::(6553[0-5]|655[0-2]\d|65[0-4]\d{2}|6[0-4]\d{3}|[1-5]?\d{1,4}))?\b`,
+	)
+	domainPattern = regexp.MustCompile(
+		`\b(?:[a-zA-Z0-9-]{1,63}\.)+(?:com|net|org|io|co|uk|ru|de|edu|gov|info|biz|dev|app|ai)(?::(6553[0-5]|655[0-2]\d|65[0-4]\d{2}|6[0-4]\d{3}|[1-5]?\d{1,4}))?\b`,
+	)
+	jwtPattern  = regexp.MustCompile(`\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b`)
+	authPattern = regexp.MustCompile(
+		`(?i)(?:"|')?(authorization|auth[_-]?token|access[_-]?token|api[_-]?key|secret|token)(?:"|')?\s*[:=]\s*(?:"|')?([^\s"'&]+)`,
+	)
+	credsPattern = regexp.MustCompile(
+		`(?i)(?:"|')?(username|user|login|email|password|pass|pwd)(?:"|')?\s*[:=]\s*(?:"|')?([^\s"'&]+)`,
+	)
+	macPattern = regexp.MustCompile(`(?i)([a-z0-9_]+_[0-9a-f]{2}(?::[0-9a-f]{2}){2}|(?:[0-9a-f]{2}[:-]){5}[0-9a-f]{2})`)
+)
+
+var rColors = []func(string) *colors.Color{
+	colors.Beige,
+	colors.Blue,
+	colors.Gray,
+	colors.Green,
+	colors.LightBlue,
+	colors.Magenta,
+	colors.Red,
+	colors.Yellow,
+	colors.BeigeBg,
+	colors.BlueBg,
+	colors.GrayBg,
+	colors.GreenBg,
+	colors.LightBlueBg,
+	colors.MagentaBg,
+	colors.RedBgDark,
+	colors.YellowBg,
+}
+
+func randColor() func(string) *colors.Color {
+	r := rand.New(rand.NewSource(time.Now().UnixNano()))
+	randIndex := r.Intn(len(rColors))
+	return rColors[randIndex]
+}
+
+func getID(nocolor bool) string {
+	id := uuid.New()
+	if nocolor {
+		return colors.WrapBrackets(id.String())
+	}
+	return randColor()(colors.WrapBrackets(id.String())).String()
+}
+
+// https://stackoverflow.com/a/1094933/1333724
+func prettifyBytes(b int64) string {
+	bf := float64(b)
+	for _, unit := range []string{"", "K", "M", "G", "T", "P", "E", "Z"} {
+		if bf < 1000.0 {
+			return fmt.Sprintf("%3.1f%sB", bf, unit)
+		}
+		bf /= 1000.0
+	}
+	return fmt.Sprintf("%.1fYB", bf)
+}
+
+func colorizeStatus(code int, status string, bg bool) string {
+	if bg {
+		if code < 300 {
+			status = colors.GreenBg(status).String()
+		} else if code < 400 {
+			status = colors.YellowBg(status).String()
+		} else {
+			status = colors.RedBgDark(status).String()
+		}
+	} else {
+		if code < 300 {
+			status = colors.Green(status).String()
+		} else if code < 400 {
+			status = colors.Yellow(status).String()
+		} else {
+			status = colors.Red(status).String()
+		}
+	}
+	return status
+}
+
+func colorizeHTTP(
+	req *http.Request,
+	resp *http.Response,
+	reqBodySaved, respBodySaved *[]byte,
+	id string,
+	ts,
+	body,
+	nocolor bool,
+) string {
+	var sb strings.Builder
+	if ts {
+		sb.WriteString(fmt.Sprintf("%s ", colorizeTimestamp(time.Now(), nocolor)))
+	}
+	if nocolor {
+		sb.WriteString(id)
+		sb.WriteString(fmt.Sprintf(" %s %s %s ", req.Method, req.URL, req.Proto))
+		if req.UserAgent() != "" {
+			sb.WriteString(colors.WrapBrackets(req.UserAgent()))
+		}
+		if req.ContentLength > 0 {
+			sb.WriteString(fmt.Sprintf(" Len: %d", req.ContentLength))
+		}
+		sb.WriteString(" →  ")
+		sb.WriteString(fmt.Sprintf("%s %s ", resp.Proto, resp.Status))
+		if resp.ContentLength > 0 {
+			sb.WriteString(fmt.Sprintf("Len: %d", resp.ContentLength))
+		}
+		if body && len(*reqBodySaved) > 0 {
+			b := colorizeBody(reqBodySaved, nocolor)
+			if b != "" {
+				sb.WriteString("\n")
+				sb.WriteString(fmt.Sprintf("%s ", colorizeTimestamp(time.Now(), nocolor)))
+				sb.WriteString(id)
+				sb.WriteString(fmt.Sprintf(" req_body: %s", b))
+			}
+		}
+		if body && len(*respBodySaved) > 0 {
+			b := colorizeBody(respBodySaved, nocolor)
+			if b != "" {
+				sb.WriteString("\n")
+				sb.WriteString(fmt.Sprintf("%s ", colorizeTimestamp(time.Now(), nocolor)))
+				sb.WriteString(id)
+				sb.WriteString(fmt.Sprintf(" resp_body: %s", b))
+			}
+		}
+	} else {
+		sb.WriteString(id)
+		sb.WriteString(colors.Gray(fmt.Sprintf(" %s ", req.Method)).String())
+		sb.WriteString(colors.YellowBg(fmt.Sprintf("%s ", req.URL)).String())
+		sb.WriteString(colors.BlueBg(fmt.Sprintf("%s ", req.Proto)).String())
+		if req.UserAgent() != "" {
+			sb.WriteString(colors.Gray(colors.WrapBrackets(req.UserAgent())).String())
+		}
+		if req.ContentLength > 0 {
+			sb.WriteString(colors.BeigeBg(fmt.Sprintf(" Len: %d", req.ContentLength)).String())
+		}
+		sb.WriteString(colors.MagentaBg(" →  ").String())
+		sb.WriteString(colors.BlueBg(fmt.Sprintf("%s ", resp.Proto)).String())
+		sb.WriteString(colorizeStatus(resp.StatusCode, fmt.Sprintf("%s ", resp.Status), true))
+		if resp.ContentLength > 0 {
+			sb.WriteString(colors.BeigeBg(fmt.Sprintf("Len: %d", resp.ContentLength)).String())
+		}
+		if body && len(*reqBodySaved) > 0 {
+			b := colorizeBody(reqBodySaved, nocolor)
+			if b != "" {
+				sb.WriteString("\n")
+				sb.WriteString(fmt.Sprintf("%s ", colorizeTimestamp(time.Now(), nocolor)))
+				sb.WriteString(id)
+				sb.WriteString(colors.RedBgDark(" req_body: ").String())
+				sb.WriteString(b)
+			}
+		}
+		if body && len(*respBodySaved) > 0 {
+			b := colorizeBody(respBodySaved, nocolor)
+			if b != "" {
+				sb.WriteString("\n")
+				sb.WriteString(fmt.Sprintf("%s ", colorizeTimestamp(time.Now(), nocolor)))
+				sb.WriteString(id)
+				sb.WriteString(colors.RedBgDark(" resp_body: ").String())
+				sb.WriteString(b)
+			}
+		}
+	}
+	return sb.String()
+}
+
+func colorizeTLS(req *layers.TLSClientHello, resp *layers.TLSServerHello, id string, nocolor bool) string {
+	var sb strings.Builder
+	if nocolor {
+		sb.WriteString(fmt.Sprintf("%s ", colorizeTimestamp(time.Now(), nocolor)))
+		sb.WriteString(id)
+		sb.WriteString(fmt.Sprintf(" %s ", req.TypeDesc))
+		if req.Length > 0 {
+			sb.WriteString(fmt.Sprintf(" Len: %d", req.Length))
+		}
+		if req.ServerName != nil && req.ServerName.SNName != "" {
+			sb.WriteString(fmt.Sprintf(" SNI: %s", req.ServerName.SNName))
+		}
+		if req.Version != nil && req.Version.Desc != "" {
+			sb.WriteString(fmt.Sprintf(" Ver: %s", req.Version.Desc))
+		}
+		if req.ALPN != nil {
+			sb.WriteString(fmt.Sprintf(" ALPN: %v", req.ALPN))
+		}
+		sb.WriteString(" →  ")
+		sb.WriteString("\n")
+		sb.WriteString(fmt.Sprintf("%s ", colorizeTimestamp(time.Now(), nocolor)))
+		sb.WriteString(id)
+		sb.WriteString(fmt.Sprintf(" %s ", resp.TypeDesc))
+		if resp.Length > 0 {
+			sb.WriteString(fmt.Sprintf(" Len: %d", resp.Length))
+		}
+		if resp.SessionID != "" {
+			sb.WriteString(fmt.Sprintf(" SID: %s", resp.SessionID))
+		}
+		if resp.CipherSuite != nil && resp.CipherSuite.Desc != "" {
+			sb.WriteString(fmt.Sprintf(" CS: %s", resp.CipherSuite.Desc))
+		}
+		if resp.SupportedVersion != nil && resp.SupportedVersion.Desc != "" {
+			sb.WriteString(fmt.Sprintf(" Ver: %s", resp.SupportedVersion.Desc))
+		}
+		if resp.ExtensionLength > 0 {
+			sb.WriteString(fmt.Sprintf(" ExtLen: %d", resp.ExtensionLength))
+		}
+	} else {
+		sb.WriteString(fmt.Sprintf("%s ", colorizeTimestamp(time.Now(), nocolor)))
+		sb.WriteString(id)
+		sb.WriteString(colors.Magenta(fmt.Sprintf(" %s ", req.TypeDesc)).Bold())
+		if req.Length > 0 {
+			sb.WriteString(colors.BeigeBg(fmt.Sprintf(" Len: %d", req.Length)).String())
+		}
+		if req.ServerName != nil && req.ServerName.SNName != "" {
+			sb.WriteString(colors.YellowBg(fmt.Sprintf(" SNI: %s", req.ServerName.SNName)).String())
+		}
+		if req.Version != nil && req.Version.Desc != "" {
+			sb.WriteString(colors.GreenBg(fmt.Sprintf(" Ver: %s", req.Version.Desc)).String())
+		}
+		if req.ALPN != nil {
+			sb.WriteString(colors.BlueBg(fmt.Sprintf(" ALPN: %v", req.ALPN)).String())
+		}
+		sb.WriteString(colors.MagentaBg(" →  ").String())
+		sb.WriteString("\n")
+		sb.WriteString(fmt.Sprintf("%s ", colorizeTimestamp(time.Now(), nocolor)))
+		sb.WriteString(id)
+		sb.WriteString(colors.LightBlue(fmt.Sprintf(" %s ", resp.TypeDesc)).Bold())
+		if resp.Length > 0 {
+			sb.WriteString(colors.BeigeBg(fmt.Sprintf(" Len: %d", resp.Length)).String())
+		}
+		if resp.SessionID != "" {
+			sb.WriteString(colors.Gray(fmt.Sprintf(" SID: %s", resp.SessionID)).String())
+		}
+		if resp.CipherSuite != nil && resp.CipherSuite.Desc != "" {
+			sb.WriteString(colors.Yellow(fmt.Sprintf(" CS: %s", resp.CipherSuite.Desc)).Bold())
+		}
+		if resp.SupportedVersion != nil && resp.SupportedVersion.Desc != "" {
+			sb.WriteString(colors.GreenBg(fmt.Sprintf(" Ver: %s", resp.SupportedVersion.Desc)).String())
+		}
+		if resp.ExtensionLength > 0 {
+			sb.WriteString(colors.BeigeBg(fmt.Sprintf(" ExtLen: %d", resp.ExtensionLength)).String())
+		}
+	}
+	return sb.String()
+}
+
+func highlightPatterns(line string, nocolor bool) (string, bool) {
+	matched := false
+
+	// TODO: make this configurable
+	// line, matched = replace(line, ipPortPattern, colors.YellowBg, matched, nocolor)
+	// line, matched = replace(line, domainPattern, colors.YellowBg, matched, nocolor)
+	line, matched = replace(line, jwtPattern, colors.Magenta, matched, nocolor)
+	line, matched = replace(line, authPattern, colors.Magenta, matched, nocolor)
+	line, matched = replace(line, credsPattern, colors.GreenBg, matched, nocolor)
+
+	return line, matched
+}
+
+func replace(line string, re *regexp.Regexp, color func(string) *colors.Color, matched, nocolor bool) (string, bool) {
+	if re.MatchString(line) {
+		matched = true
+		if !nocolor {
+			line = re.ReplaceAllStringFunc(line, func(s string) string {
+				return color(s).String()
+			})
+		}
+	}
+	return line, matched
+}
+
+func colorizeBody(b *[]byte, nocolor bool) string {
+	matches := make([]string, 0, 3)
+	scanner := bufio.NewScanner(bytes.NewReader(*b))
+	for scanner.Scan() {
+		line := scanner.Text()
+		if highlighted, ok := highlightPatterns(line, nocolor); ok {
+			matches = append(matches, strings.Trim(highlighted, "\r\n\t "))
+		}
+	}
+	return strings.Join(matches, "\n")
+}
+
+func colorizeTimestamp(ts time.Time, nocolor bool) string {
+	if nocolor {
+		return colors.WrapBrackets(ts.Format(time.TimeOnly))
+	}
+	return colors.Gray(colors.WrapBrackets(ts.Format(time.TimeOnly))).String()
+}
+
+func colorizeLogMessage(line string, nocolor bool) string {
+	if nocolor {
+		return line
+	}
+	result := ipPortPattern.ReplaceAllStringFunc(line, func(match string) string {
+		return colors.Gray(match).String()
+	})
+	result = domainPattern.ReplaceAllStringFunc(result, func(match string) string {
+		return colors.Yellow(match).String()
+	})
+	result = macPattern.ReplaceAllStringFunc(result, func(match string) string {
+		return colors.Yellow(match).String()
+	})
+	return result
+}
+
+func colorizeErrMessage(line string, nocolor bool) string {
+	if nocolor {
+		return line
+	}
+	result := ipPortPattern.ReplaceAllStringFunc(line, func(match string) string {
+		return colors.Red(match).String()
+	})
+	result = domainPattern.ReplaceAllStringFunc(result, func(match string) string {
+		return colors.Red(match).String()
+	})
+	result = strings.ReplaceAll(result, "->", "→ ")
+	return result
+}
+
+func colorizeChainType(chainType string, nocolor bool) string {
+	if nocolor {
+		return colors.WrapBrackets(chainType)
+	}
+	return colors.WrapBrackets(colors.LightBlueBg(chainType).String())
+}
+
+func colorizeConnections(srcRemote, srcLocal, dstRemote, dstLocal net.Addr, id string, r *http.Request, nocolor bool) string {
+	var sb strings.Builder
+	if nocolor {
+		sb.WriteString(id)
+		sb.WriteString(
+			fmt.Sprintf(
+				" Src: %s→ %s →  Dst: %s→ %s",
+				srcRemote,
+				srcLocal,
+				dstLocal,
+				dstRemote,
+			),
+		)
+		sb.WriteString("\n")
+		sb.WriteString(fmt.Sprintf("%s ", colorizeTimestamp(time.Now(), nocolor)))
+		sb.WriteString(id)
+		sb.WriteString(fmt.Sprintf(" %s %s %s ", r.Method, r.Host, r.Proto))
+	} else {
+		sb.WriteString(id)
+		sb.WriteString(colors.Green(fmt.Sprintf(" Src: %s→ %s", srcRemote, srcLocal)).String())
+		sb.WriteString(colors.Magenta(" →  ").String())
+		sb.WriteString(colors.Blue(fmt.Sprintf("Dst: %s→ %s", dstLocal, dstRemote)).String())
+		sb.WriteString("\n")
+		sb.WriteString(fmt.Sprintf("%s ", colorizeTimestamp(time.Now(), nocolor)))
+		sb.WriteString(id)
+		sb.WriteString(colors.Gray(fmt.Sprintf(" %s ", r.Method)).String())
+		sb.WriteString(colors.YellowBg(fmt.Sprintf("%s ", r.Host)).String())
+		sb.WriteString(colors.BlueBg(fmt.Sprintf("%s ", r.Proto)).String())
+	}
+	return sb.String()
+}
+
+func colorizeConnectionsTransparent(
+	srcRemote, srcLocal, dstRemote, dstLocal net.Addr,
+	dst,
+	id string,
+	nocolor bool,
+) string {
+	var sb strings.Builder
+	if nocolor {
+		sb.WriteString(id)
+		sb.WriteString(
+			fmt.Sprintf(
+				" Src: %s→ %s →  Dst: %s→ %s Orig Dst: %s",
+				srcRemote,
+				srcLocal,
+				dstLocal,
+				dstRemote,
+				dst,
+			),
+		)
+	} else {
+		sb.WriteString(id)
+		sb.WriteString(colors.Green(fmt.Sprintf(" Src: %s→ %s", srcRemote, srcLocal)).String())
+		sb.WriteString(colors.Magenta(" →  ").String())
+		sb.WriteString(colors.Blue(fmt.Sprintf("Dst: %s→ %s ", dstLocal, dstRemote)).String())
+		sb.WriteString(colors.BeigeBg(fmt.Sprintf("Orig Dst: %s", dst)).String())
+	}
+	return sb.String()
+}

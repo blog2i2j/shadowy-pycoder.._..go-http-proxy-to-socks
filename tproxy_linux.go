@@ -9,13 +9,11 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
-	"strings"
 	"sync"
 	"syscall"
 	"time"
 	"unsafe"
 
-	"github.com/shadowy-pycoder/colors"
 	"github.com/shadowy-pycoder/mshark/layers"
 	"github.com/shadowy-pycoder/mshark/network"
 	"golang.org/x/net/proxy"
@@ -190,7 +188,7 @@ func (ts *tproxyServer) handleConnection(srcConn net.Conn) {
 	if ts.pa.sniff {
 		wg.Add(1)
 		sniffheader := make([]string, 0, 6)
-		id := ts.pa.getID()
+		id := getID(ts.pa.nocolor)
 		if ts.pa.json {
 			sniffheader = append(
 				sniffheader,
@@ -205,18 +203,13 @@ func (ts *tproxyServer) handleConnection(srcConn net.Conn) {
 				),
 			)
 		} else {
-			var sb strings.Builder
-			if ts.pa.nocolor {
-				sb.WriteString(id)
-				sb.WriteString(fmt.Sprintf(" Src: %s→ %s →  Dst: %s→ %s Orig: %s", srcConn.RemoteAddr(), srcConn.LocalAddr(), dstConn.LocalAddr(), dstConn.RemoteAddr(), dst))
-			} else {
-				sb.WriteString(id)
-				sb.WriteString(colors.Green(fmt.Sprintf(" Src: %s→ %s", srcConn.RemoteAddr(), srcConn.LocalAddr())).String())
-				sb.WriteString(colors.Magenta(" →  ").String())
-				sb.WriteString(colors.Blue(fmt.Sprintf("Dst: %s→ %s ", dstConn.LocalAddr(), dstConn.RemoteAddr())).String())
-				sb.WriteString(colors.BeigeBg(fmt.Sprintf("Orig Dst: %s", dst)).String())
-			}
-			sniffheader = append(sniffheader, sb.String())
+			connections := colorizeConnectionsTransparent(
+				srcConn.RemoteAddr(),
+				srcConn.LocalAddr(),
+				dstConn.RemoteAddr(),
+				dstConn.LocalAddr(),
+				dst, id, ts.pa.nocolor)
+			sniffheader = append(sniffheader, connections)
 		}
 		go ts.pa.sniffreporter(&wg, &sniffheader, reqChan, respChan, id)
 	}
