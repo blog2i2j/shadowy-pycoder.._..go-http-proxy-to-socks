@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"os"
+	"os/exec"
 	"sync"
 	"syscall"
 	"time"
@@ -152,7 +154,7 @@ func (ts *tproxyServer) handleConnection(srcConn net.Conn) {
 	default:
 		ts.pa.logger.Fatal().Msg("Unknown tproxyMode")
 	}
-	if isLocalAddress(dst) {
+	if network.IsLocalAddress(dst) {
 		dstConn, err = getBaseDialer(timeout, ts.pa.mark).Dial("tcp", dst)
 		if err != nil {
 			ts.pa.logger.Error().Err(err).Msgf("[%s] Failed connecting to %s", ts.pa.tproxyMode, dst)
@@ -252,6 +254,280 @@ func getBaseDialer(timeout time.Duration, mark uint) *net.Dialer {
 	return dialer
 }
 
-func getDefaultInterface() (*net.Interface, error) {
-	return network.GetDefaultInterface()
+func (ts *tproxyServer) applyRedirectRules() string {
+	_, tproxyPort, _ := net.SplitHostPort(ts.pa.tproxyAddr)
+	var setex string
+	if ts.pa.debug {
+		setex = "set -ex"
+	}
+	switch ts.pa.tproxyMode {
+	case "redirect":
+		cmdClear := exec.Command("bash", "-c", fmt.Sprintf(`
+        %s
+        iptables -t nat -D PREROUTING -p tcp -j GOHPTS 2>/dev/null || true
+        iptables -t nat -D OUTPUT -p tcp -j GOHPTS 2>/dev/null || true
+        iptables -t nat -F GOHPTS 2>/dev/null || true
+        iptables -t nat -X GOHPTS 2>/dev/null || true
+        `, setex))
+		cmdClear.Stdout = os.Stdout
+		cmdClear.Stderr = os.Stderr
+		if err := cmdClear.Run(); err != nil {
+			ts.pa.logger.Fatal().Err(err).Msg("Failed while configuring iptables. Are you root?")
+		}
+		cmdInit := exec.Command("bash", "-c", fmt.Sprintf(`
+		%s
+        iptables -t nat -N GOHPTS 2>/dev/null
+        iptables -t nat -F GOHPTS
+
+        iptables -t nat -A GOHPTS -d 127.0.0.0/8 -j RETURN
+        iptables -t nat -A GOHPTS -p tcp --dport 22 -j RETURN
+        `, setex))
+		cmdInit.Stdout = os.Stdout
+		cmdInit.Stderr = os.Stderr
+		if err := cmdInit.Run(); err != nil {
+			ts.pa.logger.Fatal().Err(err).Msg("Failed while configuring iptables. Are you root?")
+		}
+		if ts.pa.httpServerAddr != "" {
+			_, httpPort, _ := net.SplitHostPort(ts.pa.httpServerAddr)
+			cmdHTTP := exec.Command("bash", "-c", fmt.Sprintf(`
+            %s
+            iptables -t nat -A GOHPTS -p tcp --dport %s -j RETURN
+            `, setex, httpPort))
+			cmdHTTP.Stdout = os.Stdout
+			cmdHTTP.Stderr = os.Stderr
+			if err := cmdHTTP.Run(); err != nil {
+				ts.pa.logger.Fatal().Err(err).Msg("Failed while configuring iptables. Are you root?")
+			}
+		}
+		if ts.pa.mark > 0 {
+			cmdMark := exec.Command("bash", "-c", fmt.Sprintf(`
+            %s
+            iptables -t nat -A GOHPTS -p tcp -m mark --mark %d -j RETURN
+            `, setex, ts.pa.mark))
+			cmdMark.Stdout = os.Stdout
+			cmdMark.Stderr = os.Stderr
+			if err := cmdMark.Run(); err != nil {
+				ts.pa.logger.Fatal().Err(err).Msg("Failed while configuring iptables. Are you root?")
+			}
+		} else {
+			cmd0 := exec.Command("bash", "-c", fmt.Sprintf(`
+            %s
+            iptables -t nat -A GOHPTS -p tcp --dport %s -j RETURN
+            `, setex, tproxyPort))
+			cmd0.Stdout = os.Stdout
+			cmd0.Stderr = os.Stderr
+			if err := cmd0.Run(); err != nil {
+				ts.pa.logger.Fatal().Err(err).Msg("Failed while configuring iptables. Are you root?")
+			}
+			if len(ts.pa.proxylist) > 0 {
+				for _, pr := range ts.pa.proxylist {
+					_, port, _ := net.SplitHostPort(pr.Address)
+					cmd1 := exec.Command("bash", "-c", fmt.Sprintf(`
+                    %s
+                    iptables -t nat -A GOHPTS -p tcp --dport %s -j RETURN
+                    `, setex, port))
+					cmd1.Stdout = os.Stdout
+					cmd1.Stderr = os.Stderr
+					if err := cmd1.Run(); err != nil {
+						ts.pa.logger.Fatal().Err(err).Msg("Failed while configuring iptables. Are you root?")
+					}
+					if ts.pa.proxychain.Type == "strict" {
+						break
+					}
+				}
+			}
+		}
+		cmdDocker := exec.Command("bash", "-c", fmt.Sprintf(`
+        %s
+        if command -v docker >/dev/null 2>&1
+        then
+            for subnet in $(docker network inspect $(docker network ls -q) --format '{{range .IPAM.Config}}{{.Subnet}}{{end}}'); do
+              iptables -t nat -A GOHPTS -d "$subnet" -j RETURN
+            done
+        fi
+
+        iptables -t nat -A GOHPTS -p tcp -j REDIRECT --to-ports %s
+
+        iptables -t nat -C PREROUTING -p tcp -j GOHPTS 2>/dev/null || \
+        iptables -t nat -A PREROUTING -p tcp -j GOHPTS
+
+        iptables -t nat -C OUTPUT -p tcp -j GOHPTS 2>/dev/null || \
+        iptables -t nat -A OUTPUT -p tcp -j GOHPTS
+        `, setex, tproxyPort))
+		cmdDocker.Stdout = os.Stdout
+		cmdDocker.Stderr = os.Stderr
+		if err := cmdDocker.Run(); err != nil {
+			ts.pa.logger.Fatal().Err(err).Msg("Failed while configuring iptables. Are you root?")
+		}
+	case "tproxy":
+		cmdClear := exec.Command("bash", "-c", fmt.Sprintf(`
+        %s
+        iptables -t mangle -D PREROUTING -p tcp -m socket -j DIVERT 2>/dev/null || true
+        iptables -t mangle -D PREROUTING -p tcp -j GOHPTS 2>/dev/null || true
+        iptables -t mangle -F DIVERT 2>/dev/null || true
+        iptables -t mangle -F GOHPTS 2>/dev/null || true
+        iptables -t mangle -X DIVERT 2>/dev/null || true
+        iptables -t mangle -X GOHPTS 2>/dev/null || true
+
+        ip rule del fwmark 1 lookup 100 2>/dev/null || true
+        ip route flush table 100 2>/dev/null || true
+        `, setex))
+		cmdClear.Stdout = os.Stdout
+		cmdClear.Stderr = os.Stderr
+		if err := cmdClear.Run(); err != nil {
+			ts.pa.logger.Fatal().Err(err).Msg("Failed while configuring iptables. Are you root?")
+		}
+		cmdInit0 := exec.Command("bash", "-c", fmt.Sprintf(`
+        %s
+        ip rule add fwmark 1 lookup 100 2>/dev/null || true
+        ip route add local 0.0.0.0/0 dev lo table 100 2>/dev/null || true
+
+        iptables -t mangle -N DIVERT 2>/dev/null || true
+        iptables -t mangle -F DIVERT
+        iptables -t mangle -A DIVERT -j MARK --set-mark 1
+        iptables -t mangle -A DIVERT -j ACCEPT
+
+        iptables -t mangle -N GOHPTS 2>/dev/null || true
+        iptables -t mangle -F GOHPTS
+        iptables -t mangle -A GOHPTS -d 127.0.0.0/8 -j RETURN
+        iptables -t mangle -A GOHPTS -d 224.0.0.0/4 -j RETURN
+        iptables -t mangle -A GOHPTS -d 255.255.255.255/32 -j RETURN
+        `, setex))
+		cmdInit0.Stdout = os.Stdout
+		cmdInit0.Stderr = os.Stderr
+		if err := cmdInit0.Run(); err != nil {
+			ts.pa.logger.Fatal().Err(err).Msg("Failed while configuring iptables. Are you root?")
+		}
+		cmdDocker := exec.Command("bash", "-c", fmt.Sprintf(`
+        %s
+        if command -v docker >/dev/null 2>&1
+        then
+            for subnet in $(docker network inspect $(docker network ls -q) --format '{{range .IPAM.Config}}{{.Subnet}}{{end}}'); do
+              iptables -t mangle -A GOHPTS -d "$subnet" -j RETURN
+            done
+        fi`, setex))
+		cmdDocker.Stdout = os.Stdout
+		cmdDocker.Stderr = os.Stderr
+		if err := cmdDocker.Run(); err != nil {
+			ts.pa.logger.Fatal().Err(err).Msg("Failed while configuring iptables. Are you root?")
+		}
+		cmdInit := exec.Command("bash", "-c", fmt.Sprintf(`
+        %s
+        iptables -t mangle -A GOHPTS -p tcp -m mark --mark %d -j RETURN
+        iptables -t mangle -A GOHPTS -p tcp -j TPROXY --on-port %s --tproxy-mark 1
+
+        iptables -t mangle -A PREROUTING -p tcp -m socket -j DIVERT
+        iptables -t mangle -A PREROUTING -p tcp -j GOHPTS
+        `, setex, ts.pa.mark, tproxyPort))
+		cmdInit.Stdout = os.Stdout
+		cmdInit.Stderr = os.Stderr
+		if err := cmdInit.Run(); err != nil {
+			ts.pa.logger.Fatal().Err(err).Msg("Failed while configuring iptables. Are you root?")
+		}
+	default:
+		ts.pa.logger.Fatal().Msgf("Unreachable, unknown mode: %s", ts.pa.tproxyMode)
+	}
+	cmdCat := exec.Command("bash", "-c", `
+    cat /proc/sys/net/ipv4/ip_forward
+    `)
+	output, err := cmdCat.CombinedOutput()
+	if err != nil {
+		ts.pa.logger.Fatal().Err(err).Msg("Failed while configuring iptables. Are you root?")
+	}
+	cmdForward := exec.Command("bash", "-c", fmt.Sprintf(`
+    %s
+    sysctl -w net.ipv4.ip_forward=1
+    `, setex))
+	cmdForward.Stdout = os.Stdout
+	cmdForward.Stderr = os.Stderr
+	if !ts.pa.debug {
+		cmdForward.Stdout = nil
+	}
+	_ = cmdForward.Run()
+	cmdClearForward := exec.Command("bash", "-c", fmt.Sprintf(`
+	%s
+	iptables -t filter -F GOHPTS 2>/dev/null || true
+	iptables -t filter -D FORWARD -j GOHPTS  2>/dev/null || true
+	iptables -t filter -X GOHPTS  2>/dev/null || true
+	`, setex))
+	cmdClearForward.Stdout = os.Stdout
+	cmdClearForward.Stderr = os.Stderr
+	if err := cmdClearForward.Run(); err != nil {
+		ts.pa.logger.Fatal().Err(err).Msg("Failed while configuring iptables. Are you root?")
+	}
+	var iface *net.Interface
+	if ts.pa.iface != nil {
+		iface = ts.pa.iface
+	} else {
+		iface, err = network.GetDefaultInterface()
+		if err != nil {
+			ts.pa.logger.Fatal().Err(err).Msg("failed getting default network interface")
+		}
+	}
+	cmdForwardFilter := exec.Command("bash", "-c", fmt.Sprintf(`
+	%s
+	iptables -t filter -N GOHPTS 2>/dev/null
+	iptables -t filter -F GOHPTS
+	iptables -t filter -A FORWARD -j GOHPTS
+	iptables -t filter -A GOHPTS -i %s -j ACCEPT
+	iptables -t filter -A GOHPTS -o %s -j ACCEPT
+	`, setex, iface.Name, iface.Name))
+	cmdForwardFilter.Stdout = os.Stdout
+	cmdForwardFilter.Stderr = os.Stderr
+	if err := cmdForwardFilter.Run(); err != nil {
+		ts.pa.logger.Fatal().Err(err).Msg("Failed while configuring iptables. Are you root?")
+	}
+	return string(output)
+}
+
+func (ts *tproxyServer) clearRedirectRules(output string) error {
+	var setex string
+	if ts.pa.debug {
+		setex = "set -ex"
+	}
+	cmdClear := exec.Command("bash", "-c", fmt.Sprintf(`
+	%s
+	iptables -t filter -F GOHPTS 2>/dev/null || true
+	iptables -t filter -D FORWARD -j GOHPTS  2>/dev/null || true
+	iptables -t filter -X GOHPTS  2>/dev/null || true
+	`, setex))
+	cmdClear.Stdout = os.Stdout
+	cmdClear.Stderr = os.Stderr
+	if err := cmdClear.Run(); err != nil {
+		ts.pa.logger.Fatal().Err(err).Msg("Failed while configuring iptables. Are you root?")
+	}
+	var cmd *exec.Cmd
+	switch ts.pa.tproxyMode {
+	case "redirect":
+		cmd = exec.Command("bash", "-c", fmt.Sprintf(`
+        %s
+        iptables -t nat -D PREROUTING -p tcp -j GOHPTS 2>/dev/null || true
+        iptables -t nat -D OUTPUT -p tcp -j GOHPTS 2>/dev/null || true
+        iptables -t nat -F GOHPTS 2>/dev/null || true
+        iptables -t nat -X GOHPTS 2>/dev/null || true
+        sysctl -w net.ipv4.ip_forward=%s
+        `, setex, output))
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+	case "tproxy":
+		cmd = exec.Command("bash", "-c", fmt.Sprintf(`
+        %s
+        iptables -t mangle -D PREROUTING -p tcp -m socket -j DIVERT 2>/dev/null || true
+        iptables -t mangle -D PREROUTING -p tcp -j GOHPTS 2>/dev/null || true
+        iptables -t mangle -F DIVERT 2>/dev/null || true
+        iptables -t mangle -F GOHPTS 2>/dev/null || true
+        iptables -t mangle -X DIVERT 2>/dev/null || true
+        iptables -t mangle -X GOHPTS 2>/dev/null || true
+
+        ip rule del fwmark 1 lookup 100 2>/dev/null || true
+        ip route flush table 100 2>/dev/null || true
+        sysctl -w net.ipv4.ip_forward=%s
+        `, setex, output))
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		if !ts.pa.debug {
+			cmd.Stdout = nil
+		}
+	}
+	return cmd.Run()
 }

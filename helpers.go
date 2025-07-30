@@ -1,0 +1,131 @@
+package gohpts
+
+import (
+	"encoding/base64"
+	"fmt"
+	"net"
+	"net/http"
+	"os"
+	"strconv"
+	"strings"
+
+	"github.com/shadowy-pycoder/mshark/network"
+)
+
+// Hop-by-hop headers
+// https://datatracker.ietf.org/doc/html/rfc2616#section-13.5.1
+var hopHeaders = []string{
+	"Connection",
+	"Keep-Alive",
+	"Proxy-Authenticate",
+	"Proxy-Authorization",
+	"Te", // canonicalized version of "TE"
+	"TE",
+	"Trailer",
+	"Transfer-Encoding",
+	"Upgrade",
+}
+
+func copyHeader(dst, src http.Header) {
+	for k, vv := range src {
+		for _, v := range vv {
+			dst.Add(k, v)
+		}
+	}
+}
+
+func delHopHeaders(header http.Header) {
+	for _, h := range hopHeaders {
+		header.Del(h)
+	}
+}
+
+// delConnectionHeaders removes hop-by-hop headers listed in the "Connection" header
+// https://datatracker.ietf.org/doc/html/rfc7230#section-6.1
+func delConnectionHeaders(h http.Header) {
+	for _, f := range h["Connection"] {
+		for sf := range strings.SplitSeq(f, ",") {
+			if sf = strings.TrimSpace(sf); sf != "" {
+				h.Del(sf)
+			}
+		}
+	}
+}
+
+func appendHostToXForwardHeader(header http.Header, host string) {
+	if prior, ok := header["X-Forwarded-For"]; ok {
+		host = strings.Join(prior, ", ") + ", " + host
+	}
+	header.Set("X-Forwarded-For", host)
+}
+
+func getFullAddress(v, ip string, all bool) (string, error) {
+	if v == "" {
+		return "", nil
+	}
+	ipAddr := "127.0.0.1"
+	if all {
+		ipAddr = "0.0.0.0"
+	}
+	if port, err := strconv.Atoi(v); err == nil {
+		if ip != "" {
+			return fmt.Sprintf("%s:%d", ip, port), nil
+		} else {
+			return fmt.Sprintf("%s:%d", ipAddr, port), nil
+		}
+	}
+	host, port, err := net.SplitHostPort(v)
+	if err != nil {
+		return "", err
+	}
+	if port == "" {
+		return "", fmt.Errorf("port is missing")
+	}
+	if ip != "" {
+		return fmt.Sprintf("%s:%s", ip, port), nil
+	} else if host == "" {
+		return fmt.Sprintf("%s:%s", ipAddr, port), nil
+	}
+	return fmt.Sprintf("%s:%s", host, port), nil
+}
+
+func expandPath(p string) string {
+	p = os.ExpandEnv(p)
+	if strings.HasPrefix(p, "~") {
+		if home, err := os.UserHomeDir(); err == nil {
+			return strings.Replace(p, "~", home, 1)
+		}
+	}
+	return p
+}
+
+func getAddressFromInterface(iface *net.Interface) (string, error) {
+	if iface == nil {
+		return "", nil
+	}
+	prefix, err := network.GetIPv4PrefixFromInterface(iface)
+	if err != nil {
+		return "", err
+	}
+	return prefix.Addr().String(), nil
+}
+
+func parseProxyAuth(auth string) (username, password string, ok bool) {
+	if auth == "" {
+		return "", "", false
+	}
+	const prefix = "Basic "
+	if len(auth) < len(prefix) || !strings.EqualFold(prefix, auth[:len(prefix)]) {
+		return "", "", false
+	}
+	c, err := base64.StdEncoding.DecodeString(auth[len(prefix):])
+	if err != nil {
+		return "", "", false
+	}
+	cs := string(c)
+	username, password, ok = strings.Cut(cs, ":")
+	if !ok {
+		return "", "", false
+	}
+	return username, password, true
+}

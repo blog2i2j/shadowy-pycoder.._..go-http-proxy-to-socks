@@ -4,7 +4,6 @@
 package gohpts
 
 import (
-	"fmt"
 	"net"
 	"sync"
 	"syscall"
@@ -48,6 +47,11 @@ func getBaseDialer(timeout time.Duration, mark uint) *net.Dialer {
 	return &net.Dialer{Timeout: timeout}
 }
 
-func getDefaultInterface() (*net.Interface, error) {
-	return nil, fmt.Errorf("not implemented")
+func (ts *tproxyServer) applyRedirectRules() string {
+	return ""
+}
+
+func (ts *tproxyServer) clearRedirectRules(output string) error {
+	_ = output
+	return nil
 }

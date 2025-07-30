@@ -95,7 +95,7 @@ func root(args []string) error {
 	)
 	flags.StringVar(&conf.Interface, "i", "", "Bind proxy to specific network interface")
 	flags.BoolFunc("I", "Display list of network interfaces and exit", func(flagValue string) error {
-		if err := network.DisplayInterfaces(); err != nil {
+		if err := network.DisplayInterfaces(false); err != nil {
 			fmt.Fprintf(os.Stderr, "%s: %v\n", app, err)
 			os.Exit(2)
 		}

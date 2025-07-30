@@ -7,7 +7,7 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/rs/zerolog v1.34.0
 	github.com/shadowy-pycoder/colors v0.0.1
-	github.com/shadowy-pycoder/mshark v0.0.9
+	github.com/shadowy-pycoder/mshark v0.0.10
 	golang.org/x/net v0.40.0
 	golang.org/x/sys v0.33.0
 	golang.org/x/term v0.32.0
