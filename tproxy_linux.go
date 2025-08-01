@@ -7,10 +7,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"net"
 	"net/netip"
 	"os"
 	"os/exec"
+	"slices"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -254,12 +257,34 @@ func getBaseDialer(timeout time.Duration, mark uint) *net.Dialer {
 	return dialer
 }
 
-func (ts *tproxyServer) applyRedirectRules() string {
+func (ts *tproxyServer) createSysctlOptCmd(opt, value, setex string, opts map[string]string) *exec.Cmd {
+	cmdCat := exec.Command("bash", "-c", fmt.Sprintf(`
+    cat /proc/sys/%s
+    `, strings.ReplaceAll(opt, ".", "/")))
+	output, err := cmdCat.CombinedOutput()
+	if err != nil {
+		ts.p.logger.Fatal().Err(err).Msg("Failed while configuring iptables. Are you root?")
+	}
+	opts[opt] = string(output)
+	cmd := exec.Command("bash", "-c", fmt.Sprintf(`
+    %s
+    sysctl -w %s=%s
+    `, setex, opt, value))
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if !ts.p.debug {
+		cmd.Stdout = nil
+	}
+	return cmd
+}
+
+func (ts *tproxyServer) applyRedirectRules() map[string]string {
 	_, tproxyPort, _ := net.SplitHostPort(ts.p.tproxyAddr)
 	var setex string
 	if ts.p.debug {
 		setex = "set -ex"
 	}
+	ipv4Settings := make(map[string]string, 5)
 	switch ts.p.tproxyMode {
 	case "redirect":
 		cmdClear := exec.Command("bash", "-c", fmt.Sprintf(`
@@ -427,23 +452,21 @@ func (ts *tproxyServer) applyRedirectRules() string {
 	default:
 		ts.p.logger.Fatal().Msgf("Unreachable, unknown mode: %s", ts.p.tproxyMode)
 	}
-	cmdCat := exec.Command("bash", "-c", `
-    cat /proc/sys/net/ipv4/ip_forward
-    `)
-	output, err := cmdCat.CombinedOutput()
-	if err != nil {
-		ts.p.logger.Fatal().Err(err).Msg("Failed while configuring iptables. Are you root?")
-	}
-	cmdForward := exec.Command("bash", "-c", fmt.Sprintf(`
+	_ = ts.createSysctlOptCmd("net.ipv4.ip_forward", "1", setex, ipv4Settings).Run()
+	cmdCheckBBR := exec.Command("bash", "-c", fmt.Sprintf(`
     %s
-    sysctl -w net.ipv4.ip_forward=1
+	lsmod | grep -q '^tcp_bbr' || modprobe tcp_bbr
     `, setex))
-	cmdForward.Stdout = os.Stdout
-	cmdForward.Stderr = os.Stderr
+	cmdCheckBBR.Stdout = os.Stdout
+	cmdCheckBBR.Stderr = os.Stderr
 	if !ts.p.debug {
-		cmdForward.Stdout = nil
+		cmdCheckBBR.Stdout = nil
 	}
-	_ = cmdForward.Run()
+	_ = cmdCheckBBR.Run()
+	_ = ts.createSysctlOptCmd("net.ipv4.tcp_congestion_control", "bbr", setex, ipv4Settings).Run()
+	_ = ts.createSysctlOptCmd("net.core.default_qdisc", "fq", setex, ipv4Settings).Run()
+	_ = ts.createSysctlOptCmd("net.ipv4.tcp_tw_reuse", "1", setex, ipv4Settings).Run()
+	_ = ts.createSysctlOptCmd("net.ipv4.tcp_fin_timeout", "15", setex, ipv4Settings).Run()
 	cmdClearForward := exec.Command("bash", "-c", fmt.Sprintf(`
 	%s
 	iptables -t filter -F GOHPTS 2>/dev/null || true
@@ -456,6 +479,7 @@ func (ts *tproxyServer) applyRedirectRules() string {
 		ts.p.logger.Fatal().Err(err).Msg("Failed while configuring iptables. Are you root?")
 	}
 	var iface *net.Interface
+	var err error
 	if ts.p.iface != nil {
 		iface = ts.p.iface
 	} else {
@@ -477,10 +501,10 @@ func (ts *tproxyServer) applyRedirectRules() string {
 	if err := cmdForwardFilter.Run(); err != nil {
 		ts.p.logger.Fatal().Err(err).Msg("Failed while configuring iptables. Are you root?")
 	}
-	return string(output)
+	return ipv4Settings
 }
 
-func (ts *tproxyServer) clearRedirectRules(output string) error {
+func (ts *tproxyServer) clearRedirectRules(opts map[string]string) error {
 	var setex string
 	if ts.p.debug {
 		setex = "set -ex"
@@ -496,6 +520,20 @@ func (ts *tproxyServer) clearRedirectRules(output string) error {
 	if err := cmdClear.Run(); err != nil {
 		ts.p.logger.Fatal().Err(err).Msg("Failed while configuring iptables. Are you root?")
 	}
+	cmds := make([]string, 0, len(opts))
+	for _, cmd := range slices.Sorted(maps.Keys(opts)) {
+		cmds = append(cmds, fmt.Sprintf("sysctl -w %s=%s", cmd, opts[cmd]))
+	}
+	cmdRestoreOpts := exec.Command("bash", "-c", fmt.Sprintf(`
+        %s
+		%s
+        `, setex, strings.Join(cmds, "\n")))
+	cmdRestoreOpts.Stdout = os.Stdout
+	cmdRestoreOpts.Stderr = os.Stderr
+	if !ts.p.debug {
+		cmdRestoreOpts.Stdout = nil
+	}
+	_ = cmdRestoreOpts.Run()
 	var cmd *exec.Cmd
 	switch ts.p.tproxyMode {
 	case "redirect":
@@ -505,8 +543,7 @@ func (ts *tproxyServer) clearRedirectRules(output string) error {
         iptables -t nat -D OUTPUT -p tcp -j GOHPTS 2>/dev/null || true
         iptables -t nat -F GOHPTS 2>/dev/null || true
         iptables -t nat -X GOHPTS 2>/dev/null || true
-        sysctl -w net.ipv4.ip_forward=%s
-        `, setex, output))
+        `, setex))
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 	case "tproxy":
@@ -521,8 +558,7 @@ func (ts *tproxyServer) clearRedirectRules(output string) error {
 
         ip rule del fwmark 1 lookup 100 2>/dev/null || true
         ip route flush table 100 2>/dev/null || true
-        sysctl -w net.ipv4.ip_forward=%s
-        `, setex, output))
+        `, setex))
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 		if !ts.p.debug {

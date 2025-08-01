@@ -496,7 +496,7 @@ func (p *proxyapp) Run() {
 		go p.arpspoofer.Start()
 	}
 	var tproxyServer *tproxyServer
-	var output string
+	var output map[string]string
 	if p.tproxyAddr != "" {
 		tproxyServer = newTproxyServer(p)
 		if p.auto {

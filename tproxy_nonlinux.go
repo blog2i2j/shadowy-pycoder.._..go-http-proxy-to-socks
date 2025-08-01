@@ -5,6 +5,7 @@ package gohpts
 
 import (
 	"net"
+	"os/exec"
 	"sync"
 	"syscall"
 	"time"
@@ -47,11 +48,20 @@ func getBaseDialer(timeout time.Duration, mark uint) *net.Dialer {
 	return &net.Dialer{Timeout: timeout}
 }
 
-func (ts *tproxyServer) applyRedirectRules() string {
-	return ""
+func (ts *tproxyServer) createSysctlOptCmd(opt, value, setex string, opts map[string]string) *exec.Cmd {
+	_ = opt
+	_ = value
+	_ = setex
+	_ = opts
+	return nil
 }
 
-func (ts *tproxyServer) clearRedirectRules(output string) error {
-	_ = output
+func (ts *tproxyServer) applyRedirectRules() map[string]string {
+	_ = ts.createSysctlOptCmd("", "", "", nil)
+	return nil
+}
+
+func (ts *tproxyServer) clearRedirectRules(opts map[string]string) error {
+	_ = opts
 	return nil
 }
