@@ -31,7 +31,7 @@ import (
 	"github.com/shadowy-pycoder/mshark/arpspoof"
 	"github.com/shadowy-pycoder/mshark/layers"
 	"github.com/shadowy-pycoder/mshark/network"
-	"golang.org/x/net/proxy"
+	"github.com/wzshiming/socks5"
 )
 
 const (
@@ -127,7 +127,7 @@ type proxyapp struct {
 	httpServer     *http.Server
 	sockClient     *http.Client
 	httpClient     *http.Client
-	sockDialer     proxy.Dialer
+	sockDialer     *socks5.Dialer
 	logger         *zerolog.Logger
 	snifflogger    *zerolog.Logger
 	certFile       string
@@ -390,11 +390,11 @@ func New(conf *Config) *proxyapp {
 		if err != nil {
 			p.logger.Fatal().Err(err).Msg("")
 		}
-		auth := proxy.Auth{
+		auth := Auth{
 			User:     conf.User,
 			Password: conf.Pass,
 		}
-		dialer, err := proxy.SOCKS5("tcp", addrSOCKS, &auth, getBaseDialer(timeout, p.mark))
+		dialer, err := newSOCKS5Dialer(addrSOCKS, &auth, getBaseDialer(timeout, p.mark))
 		if err != nil {
 			p.logger.Fatal().Err(err).Msg("Unable to create SOCKS5 dialer")
 		}
@@ -402,7 +402,7 @@ func New(conf *Config) *proxyapp {
 		if !tproxyonly {
 			p.sockClient = &http.Client{
 				Transport: &http.Transport{
-					Dial: dialer.Dial,
+					DialContext: dialer.DialContext,
 				},
 				CheckRedirect: func(req *http.Request, via []*http.Request) error {
 					return http.ErrUseLastResponse
@@ -764,7 +764,7 @@ func (p *proxyapp) handleTunnel(w http.ResponseWriter, r *http.Request) {
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), timeout)
 		defer cancel()
-		dstConn, err = sockDialer.(proxy.ContextDialer).DialContext(ctx, "tcp", r.Host)
+		dstConn, err = sockDialer.DialContext(ctx, "tcp", r.Host)
 		if err != nil {
 			p.logger.Error().Err(err).Msgf("Failed connecting to %s", r.Host)
 			http.Error(w, err.Error(), http.StatusServiceUnavailable)
@@ -849,18 +849,17 @@ func (p *proxyapp) updateSocksList() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.availProxyList = p.availProxyList[:0]
-	var base proxy.Dialer = getBaseDialer(timeout, p.mark)
-	var dialer proxy.Dialer
+	var dialer *socks5.Dialer
 	var err error
 	failed := 0
 	chainType := p.proxychain.Type
 	ctl := colorizeChainType(chainType, p.nocolor)
 	for _, pr := range p.proxylist {
-		auth := proxy.Auth{
+		auth := Auth{
 			User:     pr.Username,
 			Password: pr.Password,
 		}
-		dialer, err = proxy.SOCKS5("tcp", pr.Address, &auth, base)
+		dialer, err = newSOCKS5Dialer(pr.Address, &auth, getBaseDialer(timeout, p.mark))
 		if err != nil {
 			p.logger.Error().Err(err).Msgf("%s Unable to create SOCKS5 dialer %s", ctl, pr.Address)
 			failed++
@@ -868,7 +867,7 @@ func (p *proxyapp) updateSocksList() {
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), hopTimeout)
 		defer cancel()
-		conn, err := dialer.(proxy.ContextDialer).DialContext(ctx, "tcp", pr.Address)
+		conn, err := dialer.DialContext(ctx, "tcp", pr.Address)
 		if err != nil && !errors.Is(err, io.EOF) { // check for EOF to include localhost SOCKS5 in the chain
 			p.logger.Error().Err(err).Msgf("%s Unable to connect to %s", ctl, pr.Address)
 			failed++
@@ -890,11 +889,11 @@ func (p *proxyapp) updateSocksList() {
 	}
 	currentDialer := dialer
 	for _, pr := range p.proxylist[failed+1:] {
-		auth := proxy.Auth{
+		auth := Auth{
 			User:     pr.Username,
 			Password: pr.Password,
 		}
-		dialer, err = proxy.SOCKS5("tcp", pr.Address, &auth, currentDialer)
+		dialer, err = newSOCKS5Dialer(pr.Address, &auth, currentDialer)
 		if err != nil {
 			p.logger.Error().Err(err).Msgf("%s Unable to create SOCKS5 dialer %s", ctl, pr.Address)
 			continue
@@ -902,7 +901,7 @@ func (p *proxyapp) updateSocksList() {
 		// https://github.com/golang/go/issues/37549#issuecomment-1178745487
 		ctx, cancel := context.WithTimeout(context.Background(), hopTimeout)
 		defer cancel()
-		conn, err := dialer.(proxy.ContextDialer).DialContext(ctx, "tcp", pr.Address)
+		conn, err := dialer.DialContext(ctx, "tcp", pr.Address)
 		if err != nil {
 			p.logger.Error().Err(err).Msgf("%s Unable to connect to %s", ctl, pr.Address)
 			if conn != nil {
@@ -929,7 +928,7 @@ func shuffle(vals []proxyEntry) {
 	}
 }
 
-func (p *proxyapp) getSocks() (proxy.Dialer, *http.Client, error) {
+func (p *proxyapp) getSocks() (*socks5.Dialer, *http.Client, error) {
 	if p.proxylist == nil {
 		return p.sockDialer, p.sockClient, nil
 	}
@@ -984,14 +983,18 @@ func (p *proxyapp) getSocks() (proxy.Dialer, *http.Client, error) {
 		p.logger.Error().Msgf("%s Not all SOCKS5 Proxy available", ctl)
 		return nil, nil, fmt.Errorf("not all socks5 proxy available")
 	}
-	var dialer proxy.Dialer = getBaseDialer(timeout, p.mark)
+	var dialer *socks5.Dialer
 	var err error
-	for _, pr := range copyProxyList {
-		auth := proxy.Auth{
+	for i, pr := range copyProxyList {
+		auth := Auth{
 			User:     pr.Username,
 			Password: pr.Password,
 		}
-		dialer, err = proxy.SOCKS5("tcp", pr.Address, &auth, dialer)
+		if i > 0 {
+			dialer, err = newSOCKS5Dialer(pr.Address, &auth, dialer)
+		} else {
+			dialer, err = newSOCKS5Dialer(pr.Address, &auth, getBaseDialer(timeout, p.mark))
+		}
 		if err != nil {
 			p.logger.Error().Err(err).Msgf("%s Unable to create SOCKS5 dialer %s", ctl, pr.Address)
 			return nil, nil, err
@@ -999,7 +1002,7 @@ func (p *proxyapp) getSocks() (proxy.Dialer, *http.Client, error) {
 	}
 	socks := &http.Client{
 		Transport: &http.Transport{
-			Dial: dialer.Dial,
+			DialContext: dialer.DialContext,
 		},
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			return http.ErrUseLastResponse

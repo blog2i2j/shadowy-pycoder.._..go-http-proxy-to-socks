@@ -21,7 +21,6 @@ import (
 
 	"github.com/shadowy-pycoder/mshark/layers"
 	"github.com/shadowy-pycoder/mshark/network"
-	"golang.org/x/net/proxy"
 	"golang.org/x/sys/unix"
 )
 
@@ -171,7 +170,7 @@ func (ts *tproxyServer) handleConnection(srcConn net.Conn) {
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), timeout)
 		defer cancel()
-		dstConn, err = sockDialer.(proxy.ContextDialer).DialContext(ctx, "tcp", dst)
+		dstConn, err = sockDialer.DialContext(ctx, "tcp", dst)
 		if err != nil {
 			ts.p.logger.Error().Err(err).Msgf("[%s] Failed connecting to %s", ts.p.tproxyMode, dst)
 			return
@@ -238,23 +237,6 @@ func (ts *tproxyServer) Shutdown() {
 		ts.p.logger.Error().Msgf("[%s] Server timed out waiting for connections to finish", ts.p.tproxyMode)
 		return
 	}
-}
-
-func getBaseDialer(timeout time.Duration, mark uint) *net.Dialer {
-	var dialer *net.Dialer
-	if mark > 0 {
-		dialer = &net.Dialer{
-			Timeout: timeout,
-			Control: func(_, _ string, c syscall.RawConn) error {
-				return c.Control(func(fd uintptr) {
-					unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_MARK, int(mark))
-				})
-			},
-		}
-	} else {
-		dialer = &net.Dialer{Timeout: timeout}
-	}
-	return dialer
 }
 
 func (ts *tproxyServer) createSysctlOptCmd(opt, value, setex string, opts map[string]string) *exec.Cmd {

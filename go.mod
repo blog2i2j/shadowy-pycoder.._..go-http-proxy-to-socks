@@ -8,7 +8,7 @@ require (
 	github.com/rs/zerolog v1.34.0
 	github.com/shadowy-pycoder/colors v0.0.1
 	github.com/shadowy-pycoder/mshark v0.0.10
-	golang.org/x/net v0.40.0
+	github.com/wzshiming/socks5 v0.5.2
 	golang.org/x/sys v0.33.0
 	golang.org/x/term v0.32.0
 )
@@ -21,5 +21,6 @@ require (
 	github.com/mdlayher/packet v1.1.2 // indirect
 	github.com/mdlayher/socket v0.4.1 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
+	golang.org/x/net v0.40.0 // indirect
 	golang.org/x/sync v0.16.0 // indirect
 )

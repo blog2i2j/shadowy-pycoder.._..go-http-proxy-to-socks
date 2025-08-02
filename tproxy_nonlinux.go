@@ -8,7 +8,6 @@ import (
 	"os/exec"
 	"sync"
 	"syscall"
-	"time"
 )
 
 type tproxyServer struct {
@@ -42,11 +41,6 @@ func (ts *tproxyServer) handleConnection(srcConn net.Conn) {
 }
 
 func (ts *tproxyServer) Shutdown() {}
-
-func getBaseDialer(timeout time.Duration, mark uint) *net.Dialer {
-	_ = mark
-	return &net.Dialer{Timeout: timeout}
-}
 
 func (ts *tproxyServer) createSysctlOptCmd(opt, value, setex string, opts map[string]string) *exec.Cmd {
 	_ = opt

@@ -1,15 +1,19 @@
 package gohpts
 
 import (
+	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"strconv"
 	"strings"
 
 	"github.com/shadowy-pycoder/mshark/network"
+	"github.com/wzshiming/socks5"
 )
 
 // Hop-by-hop headers
@@ -128,4 +132,56 @@ func parseProxyAuth(auth string) (username, password string, ok bool) {
 		return "", "", false
 	}
 	return username, password, true
+}
+
+func splitHostPort(address string) (string, int, error) {
+	host, port, err := net.SplitHostPort(address)
+	if err != nil {
+		return "", 0, err
+	}
+	portnum, err := strconv.Atoi(port)
+	if err != nil {
+		return "", 0, err
+	}
+	if 1 > portnum || portnum > 0xffff {
+		return "", 0, errors.New("port number out of range " + port)
+	}
+	return host, portnum, nil
+}
+
+type Auth struct {
+	User, Password string
+}
+
+type ContextDialer interface {
+	DialContext(ctx context.Context, network, address string) (net.Conn, error)
+}
+
+var (
+	_ ContextDialer = &socks5.Dialer{}
+	_ ContextDialer = &net.Dialer{}
+)
+
+func newSOCKS5Dialer(address string, auth *Auth, forward ContextDialer) (*socks5.Dialer, error) {
+	d := &socks5.Dialer{
+		ProxyNetwork: "tcp",
+		IsResolve:    false,
+	}
+	host, port, err := splitHostPort(address)
+	if err != nil {
+		return nil, err
+	}
+	ip, err := netip.ParseAddr(host)
+	if err == nil {
+		host = ip.String()
+	}
+	d.ProxyAddress = net.JoinHostPort(host, strconv.Itoa(port))
+	if auth != nil {
+		d.Username = auth.User
+		d.Password = auth.Password
+	}
+	if forward != nil {
+		d.ProxyDial = forward.DialContext
+	}
+	return d, nil
 }
