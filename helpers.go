@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/netip"
 	"os"
+	"os/exec"
 	"strconv"
 	"strings"
 
@@ -184,4 +185,22 @@ func newSOCKS5Dialer(address string, auth *Auth, forward ContextDialer) (*socks5
 		d.ProxyDial = forward.DialContext
 	}
 	return d, nil
+}
+
+func createSysctlOptCmd(opt, value, setex string, opts map[string]string, debug bool) *exec.Cmd {
+	cmdCat := exec.Command("bash", "-c", fmt.Sprintf(`
+    cat /proc/sys/%s
+    `, strings.ReplaceAll(opt, ".", "/")))
+	output, _ := cmdCat.CombinedOutput()
+	opts[opt] = string(output)
+	cmd := exec.Command("bash", "-c", fmt.Sprintf(`
+    %s
+    sysctl -w %s=%s
+    `, setex, opt, value))
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if debug {
+		cmd.Stdout = nil
+	}
+	return cmd
 }
