@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 	"unsafe"
@@ -22,10 +23,11 @@ import (
 )
 
 type tproxyServer struct {
-	listener net.Listener
-	quit     chan struct{}
-	wg       sync.WaitGroup
-	p        *proxyapp
+	listener     net.Listener
+	quit         chan struct{}
+	wg           sync.WaitGroup
+	p            *proxyapp
+	startingFlag atomic.Bool
 }
 
 func newTproxyServer(p *proxyapp) *tproxyServer {
@@ -63,8 +65,10 @@ func newTproxyServer(p *proxyapp) *tproxyServer {
 }
 
 func (ts *tproxyServer) ListenAndServe() {
+	ts.startingFlag.Store(true)
 	ts.wg.Add(1)
 	go ts.serve()
+	ts.startingFlag.Store(false)
 }
 
 func (ts *tproxyServer) serve() {
@@ -146,10 +150,8 @@ func (ts *tproxyServer) handleConnection(srcConn net.Conn) {
 			ts.p.logger.Error().Err(err).Msgf("[tcp %s] Failed to get destination address", ts.p.tproxyMode)
 			return
 		}
-		ts.p.logger.Debug().Msgf("[tcp %s] getsockopt SO_ORIGINAL_DST %s", ts.p.tproxyMode, dst)
 	case "tproxy":
 		dst = srcConn.LocalAddr().String()
-		ts.p.logger.Debug().Msgf("[tcp %s] IP_TRANSPARENT %s", ts.p.tproxyMode, dst)
 	default:
 		ts.p.logger.Fatal().Msg("Unknown tproxyMode")
 	}
@@ -220,6 +222,9 @@ func (ts *tproxyServer) handleConnection(srcConn net.Conn) {
 }
 
 func (ts *tproxyServer) Shutdown() {
+	for ts.startingFlag.Load() {
+		time.Sleep(50 * time.Millisecond)
+	}
 	close(ts.quit)
 	ts.listener.Close()
 	done := make(chan struct{})

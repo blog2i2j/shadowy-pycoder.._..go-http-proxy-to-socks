@@ -199,7 +199,7 @@ func createSysctlOptCmd(opt, value, setex string, opts map[string]string, debug 
     `, setex, opt, value))
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	if debug {
+	if !debug {
 		cmd.Stdout = nil
 	}
 	return cmd
