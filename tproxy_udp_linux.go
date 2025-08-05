@@ -549,9 +549,6 @@ func (tsu *tproxyServerUDP) applyRedirectRules(opts map[string]string) {
         iptables -t mangle -D PREROUTING -p udp -j GOHPTS_UDP 2>/dev/null || true
         iptables -t mangle -F GOHPTS_UDP 2>/dev/null || true
         iptables -t mangle -X GOHPTS_UDP 2>/dev/null || true
-		iptables -t nat -D PREROUTING -p udp -j GOHPTS_UDP 2>/dev/null || true
-        iptables -t nat -F GOHPTS_UDP 2>/dev/null || true
-        iptables -t nat -X GOHPTS_UDP 2>/dev/null || true
         `, setex))
 		cmdClear.Stdout = os.Stdout
 		cmdClear.Stderr = os.Stderr
