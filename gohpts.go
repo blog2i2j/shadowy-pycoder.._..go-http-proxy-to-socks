@@ -520,14 +520,14 @@ func (p *proxyapp) Run() {
 	if p.tproxyAddr != "" {
 		tproxyServer = newTproxyServer(p)
 		if p.auto {
-			tproxyServer.applyRedirectRules(opts)
+			tproxyServer.ApplyRedirectRules(opts)
 		}
 	}
 	var tproxyServerUDP *tproxyServerUDP
 	if p.tproxyAddrUDP != "" {
 		tproxyServerUDP = newTproxyServerUDP(p)
 		if p.auto {
-			tproxyServerUDP.applyRedirectRules(opts)
+			tproxyServerUDP.ApplyRedirectRules(opts)
 		}
 	}
 	if p.proxylist != nil {
@@ -554,7 +554,7 @@ func (p *proxyapp) Run() {
 			if tproxyServer != nil {
 				p.logger.Info().Msgf("[tcp %s] Server is shutting down...", p.tproxyMode)
 				if p.auto {
-					err := tproxyServer.clearRedirectRules()
+					err := tproxyServer.ClearRedirectRules()
 					if err != nil {
 						p.logger.Error().Err(err).Msg("Failed clearing iptables rules")
 					}
@@ -564,7 +564,7 @@ func (p *proxyapp) Run() {
 			if tproxyServerUDP != nil {
 				p.logger.Info().Msgf("[udp %s] Server is shutting down...", p.tproxyMode)
 				if p.auto {
-					err := tproxyServerUDP.clearRedirectRules()
+					err := tproxyServerUDP.ClearRedirectRules()
 					if err != nil {
 						p.logger.Error().Err(err).Msg("Failed clearing iptables rules")
 					}
@@ -621,7 +621,7 @@ func (p *proxyapp) Run() {
 			if tproxyServer != nil {
 				p.logger.Info().Msgf("[tcp %s] Server is shutting down...", p.tproxyMode)
 				if p.auto {
-					err := tproxyServer.clearRedirectRules()
+					err := tproxyServer.ClearRedirectRules()
 					if err != nil {
 						p.logger.Error().Err(err).Msg("Failed clearing iptables rules")
 					}
@@ -631,7 +631,7 @@ func (p *proxyapp) Run() {
 			if tproxyServerUDP != nil {
 				p.logger.Info().Msgf("[udp %s] Server is shutting down...", p.tproxyMode)
 				if p.auto {
-					err := tproxyServerUDP.clearRedirectRules()
+					err := tproxyServerUDP.ClearRedirectRules()
 					if err != nil {
 						p.logger.Error().Err(err).Msg("Failed clearing iptables rules")
 					}

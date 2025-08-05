@@ -533,7 +533,7 @@ func (tsu *tproxyServerUDP) getOriginalDst(oob []byte) (*net.UDPAddr, error) {
 	return nil, fmt.Errorf("original destination not found")
 }
 
-func (tsu *tproxyServerUDP) applyRedirectRules(opts map[string]string) {
+func (tsu *tproxyServerUDP) ApplyRedirectRules(opts map[string]string) {
 	_, tproxyPortUDP, _ := net.SplitHostPort(tsu.p.tproxyAddrUDP)
 	var setex string
 	if tsu.p.debug {
@@ -607,7 +607,7 @@ func (tsu *tproxyServerUDP) applyRedirectRules(opts map[string]string) {
 	}
 }
 
-func (tsu *tproxyServerUDP) clearRedirectRules() error {
+func (tsu *tproxyServerUDP) ClearRedirectRules() error {
 	var setex string
 	if tsu.p.debug {
 		setex = "set -ex"

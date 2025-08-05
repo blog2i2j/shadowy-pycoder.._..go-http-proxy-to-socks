@@ -5,9 +5,7 @@ package gohpts
 
 import (
 	"net"
-	"os/exec"
 	"sync"
-	"syscall"
 )
 
 type tproxyServer struct {
@@ -23,39 +21,15 @@ func newTproxyServer(p *proxyapp) *tproxyServer {
 }
 
 func (ts *tproxyServer) ListenAndServe() {
-	ts.serve()
-}
-
-func (ts *tproxyServer) serve() {
-	ts.handleConnection(nil)
-}
-
-func (ts *tproxyServer) getOriginalDst(rawConn syscall.RawConn) (string, error) {
-	_ = rawConn
-	return "", nil
-}
-
-func (ts *tproxyServer) handleConnection(srcConn net.Conn) {
-	_ = srcConn
-	ts.getOriginalDst(nil)
 }
 
 func (ts *tproxyServer) Shutdown() {}
 
-func (ts *tproxyServer) createSysctlOptCmd(opt, value, setex string, opts map[string]string) *exec.Cmd {
-	_ = opt
-	_ = value
-	_ = setex
+func (ts *tproxyServer) ApplyRedirectRules(opts map[string]string) map[string]string {
 	_ = opts
 	return nil
 }
 
-func (ts *tproxyServer) applyRedirectRules() map[string]string {
-	_ = ts.createSysctlOptCmd("", "", "", nil)
-	return nil
-}
-
-func (ts *tproxyServer) clearRedirectRules(opts map[string]string) error {
-	_ = opts
+func (ts *tproxyServer) ClearRedirectRules() error {
 	return nil
 }

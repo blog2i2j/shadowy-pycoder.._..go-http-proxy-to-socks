@@ -243,7 +243,7 @@ func (ts *tproxyServer) Shutdown() {
 	}
 }
 
-func (ts *tproxyServer) applyRedirectRules(opts map[string]string) {
+func (ts *tproxyServer) ApplyRedirectRules(opts map[string]string) {
 	_, tproxyPort, _ := net.SplitHostPort(ts.p.tproxyAddr)
 	var setex string
 	if ts.p.debug {
@@ -420,7 +420,7 @@ func (ts *tproxyServer) applyRedirectRules(opts map[string]string) {
 	_ = createSysctlOptCmd("net.ipv4.tcp_fin_timeout", "15", setex, opts, ts.p.debug).Run()
 }
 
-func (ts *tproxyServer) clearRedirectRules() error {
+func (ts *tproxyServer) ClearRedirectRules() error {
 	var setex string
 	if ts.p.debug {
 		setex = "set -ex"
