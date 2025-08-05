@@ -34,13 +34,13 @@ var googleDNSAddr *net.UDPAddr = &net.UDPAddr{IP: net.ParseIP("8.8.8.8"), Port: 
 
 type udpConn struct {
 	*socks5.UDPConn
-	clientAddr *net.UDPAddr
-	dstAddr    *net.UDPAddr
-	lastSeen   time.Time
-	written    atomic.Uint64
+	srcAddr  *net.UDPAddr
+	dstAddr  *net.UDPAddr
+	lastSeen time.Time
+	written  atomic.Uint64
 }
 
-func newUDPConn(clientAddr *net.UDPAddr, dstAddr *net.UDPAddr, sockDialer *socks5.Dialer) (*udpConn, error) {
+func newUDPConn(srcAddr *net.UDPAddr, dstAddr *net.UDPAddr, sockDialer *socks5.Dialer) (*udpConn, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	conn, err := sockDialer.DialContext(ctx, "udp4", dstAddr.String())
@@ -51,7 +51,7 @@ func newUDPConn(clientAddr *net.UDPAddr, dstAddr *net.UDPAddr, sockDialer *socks
 	if !ok {
 		return nil, fmt.Errorf("failed obtaining relay connection")
 	}
-	return &udpConn{UDPConn: relayConn, clientAddr: clientAddr, dstAddr: dstAddr, lastSeen: time.Now()}, nil
+	return &udpConn{UDPConn: relayConn, srcAddr: srcAddr, dstAddr: dstAddr, lastSeen: time.Now()}, nil
 }
 
 type udpConnections struct {
@@ -63,20 +63,20 @@ type udpConnections struct {
 
 func (ucs *udpConnections) Add(conn *udpConn) {
 	ucs.Lock()
-	ucs.clients[fmt.Sprintf("%s,%s", conn.clientAddr, conn.dstAddr)] = conn
+	ucs.clients[fmt.Sprintf("%s,%s", conn.srcAddr, conn.dstAddr)] = conn
 	ucs.Unlock()
 }
 
-func (ucs *udpConnections) Get(clientAddr, dstAddr *net.UDPAddr) (*udpConn, bool) {
+func (ucs *udpConnections) Get(srcAddr, dstAddr *net.UDPAddr) (*udpConn, bool) {
 	ucs.RLock()
 	defer ucs.RUnlock()
-	conn, ok := ucs.clients[fmt.Sprintf("%s,%s", clientAddr, dstAddr)]
+	conn, ok := ucs.clients[fmt.Sprintf("%s,%s", srcAddr, dstAddr)]
 	return conn, ok
 }
 
 func (ucs *udpConnections) Remove(conn *udpConn) {
 	ucs.Lock()
-	delete(ucs.clients, fmt.Sprintf("%s,%s", conn.clientAddr, conn.dstAddr))
+	delete(ucs.clients, fmt.Sprintf("%s,%s", conn.srcAddr, conn.dstAddr))
 	ucs.Unlock()
 }
 
@@ -288,13 +288,9 @@ func (tsu *tproxyServerUDP) handleConnection(conn *udpConn) {
 	tsu.wg.Add(1)
 	buf := make([]byte, udpBufferSize)
 	defer func() {
-		srcConnStr := fmt.Sprintf("%s→ %s", conn.clientAddr, conn.dstAddr)
+		srcConnStr := fmt.Sprintf("%s→ %s", conn.srcAddr, conn.dstAddr)
 		dstConnStr := fmt.Sprintf("%s→ %s→ %s", tsu.conn.LocalAddr(), conn.LocalAddr(), conn.dstAddr)
-		tsu.p.logger.Debug().Msgf("[udp %s] Copied %s for src: %s - dst: %s",
-			tsu.p.tproxyMode,
-			prettifyBytes(int64(conn.written.Load())),
-			srcConnStr,
-			dstConnStr)
+		tsu.p.logger.Debug().Msgf("Copied %s for udp src: %s - dst: %s", prettifyBytes(int64(conn.written.Load())), srcConnStr, dstConnStr)
 	}()
 readLoop:
 	for {
@@ -314,10 +310,10 @@ readLoop:
 			if nr > 0 {
 				er := tsu.conn.SetWriteDeadline(time.Now().Add(writeTimeoutUDP))
 				if er != nil {
-					tsu.p.logger.Debug().Err(er).Msgf("[udp %s] Failed setting write deadline %s→ %s", tsu.p.tproxyMode, tsu.conn.LocalAddr(), conn.clientAddr)
+					tsu.p.logger.Debug().Err(er).Msgf("[udp %s] Failed setting write deadline %s→ %s", tsu.p.tproxyMode, tsu.conn.LocalAddr(), conn.srcAddr)
 					break readLoop
 				}
-				nw, ew := tsu.conn.WriteToUDP(buf[0:nr], conn.clientAddr)
+				nw, ew := tsu.conn.WriteToUDP(buf[0:nr], conn.srcAddr)
 				if nw < 0 || nr < nw {
 					nw = 0
 					if ew == nil {
@@ -334,7 +330,7 @@ readLoop:
 					}
 				}
 				if nr != nw {
-					tsu.p.logger.Debug().Err(io.ErrShortWrite).Msgf("[udp %s] Failed sending message %s→ %s", tsu.p.tproxyMode, tsu.conn.LocalAddr(), conn.clientAddr)
+					tsu.p.logger.Debug().Err(io.ErrShortWrite).Msgf("[udp %s] Failed sending message %s→ %s", tsu.p.tproxyMode, tsu.conn.LocalAddr(), conn.srcAddr)
 					break readLoop
 				}
 			}
@@ -358,11 +354,12 @@ readLoop:
 
 type dnsConn struct {
 	*net.UDPConn
-	clientAddr *net.UDPAddr
-	written    atomic.Uint64
+	srcAddr *net.UDPAddr
+	dstAddr *net.UDPAddr
+	written atomic.Uint64
 }
 
-func newDNSConn(clientAddr *net.UDPAddr, mark uint) (*dnsConn, error) {
+func newDNSConn(srcAddr *net.UDPAddr, mark uint) (*dnsConn, error) {
 	dialer := getBaseDialer(timeout, mark)
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
@@ -374,7 +371,7 @@ func newDNSConn(clientAddr *net.UDPAddr, mark uint) (*dnsConn, error) {
 	if !ok {
 		return nil, fmt.Errorf("failed obtaining dns connection")
 	}
-	return &dnsConn{UDPConn: udpConn, clientAddr: clientAddr}, nil
+	return &dnsConn{UDPConn: udpConn, srcAddr: srcAddr, dstAddr: googleDNSAddr}, nil
 }
 
 func (tsu *tproxyServerUDP) listenAndServeDNS() {
@@ -401,7 +398,7 @@ func (tsu *tproxyServerUDP) listenAndServeDNS() {
 					continue
 				}
 				srcConnStr := fmt.Sprintf("%s→ %s", srcAddr, tsu.gwConn.LocalAddr())
-				dstConnStr := fmt.Sprintf("%s→ %s→ %s", conn.LocalAddr(), tsu.gwConn.LocalAddr(), googleDNSAddr)
+				dstConnStr := fmt.Sprintf("%s→ %s→ %s", conn.LocalAddr(), tsu.gwConn.LocalAddr(), conn.dstAddr)
 				tsu.p.logger.Debug().Msgf("[udp %s] src: %s - dst: %s", tsu.p.tproxyMode, srcConnStr, dstConnStr)
 				err = conn.SetWriteDeadline(time.Now().Add(writeTimeoutUDP))
 				if err != nil {
@@ -419,7 +416,7 @@ func (tsu *tproxyServerUDP) listenAndServeDNS() {
 					if errors.Is(err, net.ErrClosed) {
 						continue
 					}
-					tsu.p.logger.Error().Err(err).Msgf("[udp %s] Failed sending message %s→ %s", tsu.p.tproxyMode, conn.LocalAddr(), googleDNSAddr)
+					tsu.p.logger.Error().Err(err).Msgf("[udp %s] Failed sending message %s→ %s", tsu.p.tproxyMode, conn.LocalAddr(), conn.dstAddr)
 					continue
 				}
 				conn.written.Add(uint64(nw))
@@ -448,13 +445,9 @@ func (tsu *tproxyServerUDP) listenAndServeDNS() {
 func (tsu *tproxyServerUDP) handleDNSConnection(conn *dnsConn) {
 	tsu.wg.Add(1)
 	defer func() {
-		srcConnStr := fmt.Sprintf("%s→ %s", conn.clientAddr, tsu.gwConn.LocalAddr())
-		dstConnStr := fmt.Sprintf("%s→ %s→ %s", conn.LocalAddr(), tsu.gwConn.LocalAddr(), googleDNSAddr)
-		tsu.p.logger.Debug().Msgf("[udp %s] Copied %s for src: %s - dst: %s",
-			tsu.p.tproxyMode,
-			prettifyBytes(int64(conn.written.Load())),
-			srcConnStr,
-			dstConnStr)
+		srcConnStr := fmt.Sprintf("%s→ %s", conn.srcAddr, tsu.gwConn.LocalAddr())
+		dstConnStr := fmt.Sprintf("%s→ %s→ %s", conn.LocalAddr(), tsu.gwConn.LocalAddr(), conn.dstAddr)
+		tsu.p.logger.Debug().Msgf("Copied %s for udp src: %s - dst: %s", prettifyBytes(int64(conn.written.Load())), srcConnStr, dstConnStr)
 		conn.Close()
 	}()
 	buf := make([]byte, udpBufferSize)
@@ -463,7 +456,7 @@ func (tsu *tproxyServerUDP) handleDNSConnection(conn *dnsConn) {
 		if errors.Is(er, net.ErrClosed) {
 			return
 		}
-		tsu.p.logger.Debug().Err(er).Msgf("[udp %s] Failed setting read deadline %s→ %s", tsu.p.tproxyMode, googleDNSAddr, conn.LocalAddr())
+		tsu.p.logger.Debug().Err(er).Msgf("[udp %s] Failed setting read deadline %s→ %s", tsu.p.tproxyMode, conn.dstAddr, conn.LocalAddr())
 		return
 	}
 	nr, er := conn.Read(buf)
@@ -473,10 +466,10 @@ func (tsu *tproxyServerUDP) handleDNSConnection(conn *dnsConn) {
 			if errors.Is(er, net.ErrClosed) {
 				return
 			}
-			tsu.p.logger.Debug().Err(er).Msgf("[udp %s] Failed setting write deadline %s→ %s", tsu.p.tproxyMode, conn.LocalAddr(), conn.clientAddr)
+			tsu.p.logger.Debug().Err(er).Msgf("[udp %s] Failed setting write deadline %s→ %s", tsu.p.tproxyMode, conn.LocalAddr(), conn.srcAddr)
 			return
 		}
-		nw, ew := tsu.gwConn.WriteToUDP(buf[0:nr], conn.clientAddr)
+		nw, ew := tsu.gwConn.WriteToUDP(buf[0:nr], conn.srcAddr)
 		if nw < 0 || nr < nw {
 			nw = 0
 			if ew == nil {
@@ -490,7 +483,7 @@ func (tsu *tproxyServerUDP) handleDNSConnection(conn *dnsConn) {
 		if nr != nw {
 			tsu.p.logger.Debug().
 				Err(io.ErrShortWrite).
-				Msgf("[udp %s] Failed sending message %s→ %s", tsu.p.tproxyMode, conn.LocalAddr(), conn.clientAddr)
+				Msgf("[udp %s] Failed sending message %s→ %s", tsu.p.tproxyMode, conn.LocalAddr(), conn.srcAddr)
 			return
 		}
 	}
