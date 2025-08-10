@@ -198,7 +198,7 @@ func (ts *tproxyServer) handleConnection(srcConn net.Conn) {
 			sniffheader = append(
 				sniffheader,
 				fmt.Sprintf(
-					"{\"connection\":{\"tproxy_mode\":%s,\"src_remote\":%s,\"src_local\":%s,\"dst_local\":%s,\"dst_remote\":%s,\"original_dst\":%s}}",
+					"{\"connection\":{\"tproxy_mode\":%q,\"src_remote\":%q,\"src_local\":%q,\"dst_local\":%q,\"dst_remote\":%q,\"original_dst\":%q}}",
 					ts.p.tproxyMode,
 					srcConn.RemoteAddr(),
 					srcConn.LocalAddr(),
@@ -211,8 +211,8 @@ func (ts *tproxyServer) handleConnection(srcConn net.Conn) {
 			connections := colorizeConnectionsTransparent(
 				srcConn.RemoteAddr(),
 				srcConn.LocalAddr(),
-				dstConn.RemoteAddr(),
 				dstConn.LocalAddr(),
+				dstConn.RemoteAddr(),
 				dst, id, ts.p.nocolor)
 			sniffheader = append(sniffheader, connections)
 		}

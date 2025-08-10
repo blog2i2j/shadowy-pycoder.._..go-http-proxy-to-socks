@@ -18,6 +18,7 @@ import (
 	"time"
 	"unsafe"
 
+	"github.com/shadowy-pycoder/mshark/layers"
 	"github.com/shadowy-pycoder/mshark/network"
 	"github.com/wzshiming/socks5"
 	"golang.org/x/sys/unix"
@@ -38,6 +39,18 @@ type udpConn struct {
 	dstAddr  *net.UDPAddr
 	lastSeen time.Time
 	written  atomic.Uint64
+	reqChan  chan layers.Layer
+	respChan chan layers.Layer
+}
+
+func (uc *udpConn) SrcPort() *uint16 {
+	srcPort := uint16(uc.dstAddr.Port)
+	return &srcPort
+}
+
+func (uc *udpConn) DstPort() *uint16 {
+	dstPort := uint16(uc.dstAddr.Port)
+	return &dstPort
 }
 
 func newUDPConn(srcAddr *net.UDPAddr, dstAddr *net.UDPAddr, sockDialer *socks5.Dialer) (*udpConn, error) {
@@ -239,7 +252,6 @@ func (tsu *tproxyServerUDP) ListenAndServe() {
 					tsu.clients.Add(conn)
 					go func() {
 						tsu.handleConnection(conn)
-						tsu.wg.Done()
 					}()
 				}
 				srcConnStr := fmt.Sprintf("%s→ %s", srcAddr, dstAddr)
@@ -252,6 +264,38 @@ func (tsu *tproxyServerUDP) ListenAndServe() {
 					}
 					tsu.p.logger.Error().Err(err).Msgf("[udp %s] Failed setting write deadline", tsu.p.tproxyMode)
 					continue
+				}
+				if tsu.p.sniff {
+					if next := layers.ParseNextLayer(buf[:n], conn.SrcPort(), conn.DstPort()); next != nil {
+						tsu.wg.Add(1)
+						sniffheader := make([]string, 0, 3)
+						id := getID(tsu.p.nocolor)
+						if tsu.p.json {
+							sniffheader = append(
+								sniffheader,
+								fmt.Sprintf(
+									"{\"connection\":{\"tproxy_mode\":%q,\"src_remote\":%q,\"src_local\":%q,\"dst_local\":%q,\"dst_remote\":%q,\"original_dst\":%s}}",
+									tsu.p.tproxyMode,
+									srcAddr,
+									conn.dstAddr,
+									tsu.conn.LocalAddr(),
+									conn.LocalAddr(),
+									conn.dstAddr,
+								),
+							)
+						} else {
+							connections := colorizeConnectionsTransparent(
+								srcAddr,
+								conn.dstAddr,
+								tsu.conn.LocalAddr(),
+								conn.LocalAddr(),
+								conn.dstAddr.String(),
+								id, tsu.p.nocolor)
+							sniffheader = append(sniffheader, connections)
+						}
+						go tsu.p.sniffreporter(&tsu.wg, &sniffheader, conn.reqChan, conn.respChan, id)
+						conn.reqChan <- next
+					}
 				}
 				nw, err := conn.WriteToUDP(buf[:n], dstAddr)
 				if err != nil {
@@ -291,6 +335,7 @@ func (tsu *tproxyServerUDP) handleConnection(conn *udpConn) {
 		srcConnStr := fmt.Sprintf("%s→ %s", conn.srcAddr, conn.dstAddr)
 		dstConnStr := fmt.Sprintf("%s→ %s→ %s", tsu.conn.LocalAddr(), conn.LocalAddr(), conn.dstAddr)
 		tsu.p.logger.Debug().Msgf("Copied %s for udp src: %s - dst: %s", prettifyBytes(int64(conn.written.Load())), srcConnStr, dstConnStr)
+		tsu.wg.Done()
 	}()
 readLoop:
 	for {
@@ -312,6 +357,11 @@ readLoop:
 				if er != nil {
 					tsu.p.logger.Debug().Err(er).Msgf("[udp %s] Failed setting write deadline %s→ %s", tsu.p.tproxyMode, tsu.conn.LocalAddr(), conn.srcAddr)
 					break readLoop
+				}
+				if tsu.p.sniff {
+					if next := layers.ParseNextLayer(buf[:nr], conn.SrcPort(), conn.DstPort()); next != nil {
+						conn.respChan <- next
+					}
 				}
 				nw, ew := tsu.conn.WriteToUDP(buf[0:nr], conn.srcAddr)
 				if nw < 0 || nr < nw {
@@ -354,9 +404,17 @@ readLoop:
 
 type dnsConn struct {
 	*net.UDPConn
-	srcAddr *net.UDPAddr
-	dstAddr *net.UDPAddr
-	written atomic.Uint64
+	srcAddr  *net.UDPAddr
+	dstAddr  *net.UDPAddr
+	written  atomic.Uint64
+	reqChan  chan layers.Layer
+	respChan chan layers.Layer
+}
+
+func (dc *dnsConn) close() error {
+	close(dc.reqChan)
+	close(dc.respChan)
+	return dc.Close()
 }
 
 func newDNSConn(srcAddr *net.UDPAddr, mark uint) (*dnsConn, error) {
@@ -371,7 +429,13 @@ func newDNSConn(srcAddr *net.UDPAddr, mark uint) (*dnsConn, error) {
 	if !ok {
 		return nil, fmt.Errorf("failed obtaining dns connection")
 	}
-	return &dnsConn{UDPConn: udpConn, srcAddr: srcAddr, dstAddr: googleDNSAddr}, nil
+	return &dnsConn{
+		UDPConn:  udpConn,
+		srcAddr:  srcAddr,
+		dstAddr:  googleDNSAddr,
+		reqChan:  make(chan layers.Layer),
+		respChan: make(chan layers.Layer),
+	}, nil
 }
 
 func (tsu *tproxyServerUDP) listenAndServeDNS() {
@@ -398,7 +462,7 @@ func (tsu *tproxyServerUDP) listenAndServeDNS() {
 					continue
 				}
 				srcConnStr := fmt.Sprintf("%s→ %s", srcAddr, tsu.gwConn.LocalAddr())
-				dstConnStr := fmt.Sprintf("%s→ %s→ %s", conn.LocalAddr(), tsu.gwConn.LocalAddr(), conn.dstAddr)
+				dstConnStr := fmt.Sprintf("%s→ %s", conn.LocalAddr(), conn.dstAddr)
 				tsu.p.logger.Debug().Msgf("[udp %s] src: %s - dst: %s", tsu.p.tproxyMode, srcConnStr, dstConnStr)
 				err = conn.SetWriteDeadline(time.Now().Add(writeTimeoutUDP))
 				if err != nil {
@@ -407,6 +471,41 @@ func (tsu *tproxyServerUDP) listenAndServeDNS() {
 					}
 					tsu.p.logger.Error().Err(err).Msgf("[udp %s] Failed setting write deadline", tsu.p.tproxyMode)
 					continue
+				}
+				if tsu.p.sniff {
+					dns := &layers.DNSMessage{}
+					if err := dns.Parse(buf[:n]); err == nil {
+						tsu.wg.Add(1)
+						sniffheader := make([]string, 0, 3)
+						id := getID(tsu.p.nocolor)
+						if tsu.p.json {
+							sniffheader = append(
+								sniffheader,
+								fmt.Sprintf(
+									"{\"connection\":{\"tproxy_mode\":%q,\"src_remote\":%q,\"src_local\":%q,\"dst_local\":%q,\"dst_remote\":%q,\"original_dst\":%q}}",
+									tsu.p.tproxyMode,
+									srcAddr,
+									tsu.gwConn.LocalAddr(),
+									conn.LocalAddr(),
+									conn.dstAddr,
+									tsu.gwConn.LocalAddr(),
+								),
+							)
+						} else {
+							connections := colorizeConnectionsTransparent(
+								srcAddr,
+								tsu.gwConn.LocalAddr(),
+								conn.LocalAddr(),
+								conn.dstAddr,
+								tsu.gwConn.LocalAddr().String(),
+								id, tsu.p.nocolor)
+							sniffheader = append(sniffheader, connections)
+						}
+						go tsu.p.sniffreporter(&tsu.wg, &sniffheader, conn.reqChan, conn.respChan, id)
+						conn.reqChan <- dns
+					} else {
+						tsu.p.logger.Error().Err(err).Msgf("%v", buf[:n])
+					}
 				}
 				nw, err := conn.Write(buf[:n])
 				if err != nil {
@@ -420,10 +519,7 @@ func (tsu *tproxyServerUDP) listenAndServeDNS() {
 					continue
 				}
 				conn.written.Add(uint64(nw))
-				go func() {
-					tsu.handleDNSConnection(conn)
-					tsu.wg.Done()
-				}()
+				go tsu.handleDNSConnection(conn)
 			}
 			if er != nil {
 				if ne, ok := er.(net.Error); ok && ne.Timeout() {
@@ -446,9 +542,10 @@ func (tsu *tproxyServerUDP) handleDNSConnection(conn *dnsConn) {
 	tsu.wg.Add(1)
 	defer func() {
 		srcConnStr := fmt.Sprintf("%s→ %s", conn.srcAddr, tsu.gwConn.LocalAddr())
-		dstConnStr := fmt.Sprintf("%s→ %s→ %s", conn.LocalAddr(), tsu.gwConn.LocalAddr(), conn.dstAddr)
+		dstConnStr := fmt.Sprintf("%s→ %s", conn.LocalAddr(), conn.dstAddr)
 		tsu.p.logger.Debug().Msgf("Copied %s for udp src: %s - dst: %s", prettifyBytes(int64(conn.written.Load())), srcConnStr, dstConnStr)
-		conn.Close()
+		conn.close()
+		tsu.wg.Done()
 	}()
 	buf := make([]byte, udpBufferSize)
 	er := conn.SetReadDeadline(time.Now().Add(readTimeoutUDP))
@@ -468,6 +565,14 @@ func (tsu *tproxyServerUDP) handleDNSConnection(conn *dnsConn) {
 			}
 			tsu.p.logger.Debug().Err(er).Msgf("[udp %s] Failed setting write deadline %s→ %s", tsu.p.tproxyMode, conn.LocalAddr(), conn.srcAddr)
 			return
+		}
+		if tsu.p.sniff {
+			dns := &layers.DNSMessage{}
+			if err := dns.Parse(buf[:nr]); err == nil {
+				conn.respChan <- dns
+			} else {
+				tsu.p.logger.Error().Err(err).Msgf("%v", buf[:nr])
+			}
 		}
 		nw, ew := tsu.gwConn.WriteToUDP(buf[0:nr], conn.srcAddr)
 		if nw < 0 || nr < nw {

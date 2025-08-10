@@ -288,6 +288,9 @@ func New(conf *Config) *proxyapp {
 			p.logger.Fatal().Err(err).Msg("")
 		}
 	}
+	if network.AddrEqual(p.tproxyAddr, p.tproxyAddrUDP) {
+		p.logger.Fatal().Msgf("%s: address already in use", p.tproxyAddrUDP)
+	}
 	p.auto = conf.Auto
 	if p.auto && runtime.GOOS != "linux" {
 		p.logger.Fatal().Msg("Auto setup is available only on linux systems")
@@ -690,7 +693,6 @@ func (p *proxyapp) handleForward(w http.ResponseWriter, r *http.Request) {
 	var resp *http.Response
 	var chunked bool
 	var respBodySaved []byte
-	p.httpClient.Timeout = timeout
 	if network.IsLocalAddress(r.Host) {
 		resp = p.doReq(w, req, nil)
 	} else {
@@ -879,7 +881,7 @@ func (p *proxyapp) handleTunnel(w http.ResponseWriter, r *http.Request) {
 		if p.json {
 			sniffdata = append(
 				sniffdata,
-				fmt.Sprintf("{\"connection\":{\"src_remote\":%s,\"src_local\":%s,\"dst_local\":%s,\"dst_remote\":%s}}",
+				fmt.Sprintf("{\"connection\":{\"src_remote\":%q,\"src_local\":%q,\"dst_local\":%q,\"dst_remote\":%q}}",
 					srcConn.RemoteAddr(), srcConn.LocalAddr(), dstConn.LocalAddr(), dstConn.RemoteAddr()),
 			)
 			j, err := json.Marshal(&layers.HTTPMessage{Request: r})
@@ -1205,6 +1207,21 @@ func (p *proxyapp) gatherSniffData(req, resp layers.Layer, sniffdata *[]string, 
 				*sniffdata = append(*sniffdata, colorizeTLS(chs, shs, id, p.nocolor))
 			}
 		}
+	case *layers.DNSMessage:
+		rest := resp.(*layers.DNSMessage)
+		if p.json {
+			j1, err := json.Marshal(reqt)
+			if err != nil {
+				return err
+			}
+			j2, err := json.Marshal(rest)
+			if err != nil {
+				return err
+			}
+			*sniffdata = append(*sniffdata, string(j1), string(j2))
+		} else {
+			*sniffdata = append(*sniffdata, colorizeDNS(reqt, rest, id, p.nocolor))
+		}
 	}
 	return nil
 }
@@ -1212,7 +1229,7 @@ func (p *proxyapp) gatherSniffData(req, resp layers.Layer, sniffdata *[]string, 
 func (p *proxyapp) sniffreporter(wg *sync.WaitGroup, sniffdata *[]string, reqChan, respChan <-chan layers.Layer, id string) {
 	defer wg.Done()
 	sniffdatalen := len(*sniffdata)
-	var reqTLSQueue, respTLSQueue, reqHTTPQueue, respHTTPQueue []layers.Layer
+	var reqTLSQueue, respTLSQueue, reqHTTPQueue, respHTTPQueue, reqDNSQueue, respDNSQueue []layers.Layer
 	for {
 		select {
 		case req, ok := <-reqChan:
@@ -1224,6 +1241,8 @@ func (p *proxyapp) sniffreporter(wg *sync.WaitGroup, sniffdata *[]string, reqCha
 					reqTLSQueue = append(reqTLSQueue, req)
 				case *layers.HTTPMessage:
 					reqHTTPQueue = append(reqHTTPQueue, req)
+				case *layers.DNSMessage:
+					reqDNSQueue = append(reqDNSQueue, req)
 				}
 			}
 		case resp, ok := <-respChan:
@@ -1244,6 +1263,12 @@ func (p *proxyapp) sniffreporter(wg *sync.WaitGroup, sniffdata *[]string, reqCha
 						respHTTPQueue = append(respHTTPQueue, resp)
 					} else if len(reqHTTPQueue) == 0 && len(respHTTPQueue) == 1 {
 						respHTTPQueue = respHTTPQueue[1:]
+					}
+				case *layers.DNSMessage:
+					if len(reqDNSQueue) > 0 || len(respDNSQueue) == 0 {
+						respDNSQueue = append(respDNSQueue, resp)
+					} else if len(reqDNSQueue) == 0 && len(respDNSQueue) == 1 {
+						respDNSQueue = respDNSQueue[1:]
 					}
 				}
 			}
@@ -1269,6 +1294,22 @@ func (p *proxyapp) sniffreporter(wg *sync.WaitGroup, sniffdata *[]string, reqCha
 			resp := respTLSQueue[0]
 			reqTLSQueue = reqTLSQueue[1:]
 			respTLSQueue = respTLSQueue[1:]
+
+			err := p.gatherSniffData(req, resp, sniffdata, id)
+			if err == nil && len(*sniffdata) > sniffdatalen {
+				if p.json {
+					p.snifflogger.Log().Msg(fmt.Sprintf("[%s]", strings.Join(*sniffdata, ",")))
+				} else {
+					p.snifflogger.Log().Msg(strings.Join(*sniffdata, "\n"))
+				}
+			}
+			*sniffdata = (*sniffdata)[:sniffdatalen]
+		}
+		if len(reqDNSQueue) > 0 && len(respDNSQueue) > 0 {
+			req := reqDNSQueue[0]
+			resp := respDNSQueue[0]
+			reqDNSQueue = reqDNSQueue[1:]
+			respDNSQueue = respDNSQueue[1:]
 
 			err := p.gatherSniffData(req, resp, sniffdata, id)
 			if err == nil && len(*sniffdata) > sniffdatalen {

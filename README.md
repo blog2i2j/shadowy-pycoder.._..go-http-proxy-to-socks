@@ -528,7 +528,7 @@ Check proxy logs for traffic from other devices from your LAN
 
 ### UDP support
 
-`GoHPTS` has UDP support that can be enabled in `tproxy` mode. For this setup to work you need to connect to a socks5 server capable of serving UDP connections (`UDP ASSOCIATE`). For example, you can use [https://github.com/wzshiming/socks5](https://github.com/wzshiming/socks5) to deploy UDP capable UDP server on some remote or local machine. Once you have the server to connect to, run the following command:
+`GoHPTS` has UDP support that can be enabled in `tproxy` mode. For this setup to work you need to connect to a socks5 server capable of serving UDP connections (`UDP ASSOCIATE`). For example, you can use [https://github.com/wzshiming/socks5](https://github.com/wzshiming/socks5) to deploy UDP capable socks5 server on some remote or local machine. Once you have the server to connect to, run the following command:
 
 ```shell
 sudo env PATH=$PATH gohpts -s remote -Tu :8989 -M tproxy -auto -mark 100 -d
@@ -539,7 +539,7 @@ This command will configure your operating system and setup server on `0.0.0.0:8
 To test it locally, you can combine UDP transparent proxy with `-arpspoof` flag. For example:
 
 1. Setup VM on your system with any Linux distributive that supports `tproxy` (Kali Linux, for instance).
-2. Enable `Bridged` network so that VM could access your host machine.
+2. Enable `bridged` network so that VM could access your host machine.
 3. Move `gohpts` binary to VM (via `ssh`, for instance) or build it there in case of different OS/arch.
 4. On your VM run the following command:
 
