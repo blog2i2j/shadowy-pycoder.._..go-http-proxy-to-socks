@@ -31,8 +31,6 @@ const (
 	udpBufferSize   int           = 4096
 )
 
-var googleDNSAddr *net.UDPAddr = &net.UDPAddr{IP: net.ParseIP("8.8.8.8"), Port: 53}
-
 type udpConn struct {
 	*socks5.UDPConn
 	srcAddr  *net.UDPAddr
@@ -179,29 +177,31 @@ func newTproxyServerUDP(p *proxyapp) *tproxyServerUDP {
 			tsu.p.logger.Fatal().Err(err).Msgf("[udp %s] Failed getting default interface", tsu.p.tproxyMode)
 		}
 	}
-	gw, err := network.GetGatewayIPv4FromInterface(tsu.iface.Name)
-	if err != nil {
-		tsu.p.logger.Fatal().Err(err).Msgf("[udp %s] failed getting gateway from %s", tsu.p.tproxyMode, tsu.iface.Name)
+	if tsu.p.arpspoofer != nil {
+		gw, err := network.GetGatewayIPv4FromInterface(tsu.iface.Name)
+		if err != nil {
+			tsu.p.logger.Fatal().Err(err).Msgf("[udp %s] failed getting gateway from %s", tsu.p.tproxyMode, tsu.iface.Name)
+		}
+		tsu.gwDNS = &net.UDPAddr{IP: net.ParseIP(gw.String()), Port: 53}
+		lc = net.ListenConfig{
+			Control: func(network, address string, conn syscall.RawConn) error {
+				var operr error
+				if err := conn.Control(func(fd uintptr) {
+					operr = unix.SetsockoptInt(int(fd), unix.SOL_IP, unix.IP_TRANSPARENT, 1)
+					operr = unix.SetsockoptInt(int(fd), unix.SOL_IP, unix.IP_FREEBIND, 1)
+					operr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_REUSEADDR, 1)
+				}); err != nil {
+					return err
+				}
+				return operr
+			},
+		}
+		pconn, err = lc.ListenPacket(context.Background(), "udp4", tsu.gwDNS.String())
+		if err != nil {
+			tsu.p.logger.Fatal().Err(err).Msgf("[udp %s] failed listening on gateway DNS", tsu.p.tproxyMode)
+		}
+		tsu.gwConn = pconn.(*net.UDPConn)
 	}
-	tsu.gwDNS = &net.UDPAddr{IP: net.ParseIP(gw.String()), Port: 53}
-	lc = net.ListenConfig{
-		Control: func(network, address string, conn syscall.RawConn) error {
-			var operr error
-			if err := conn.Control(func(fd uintptr) {
-				operr = unix.SetsockoptInt(int(fd), unix.SOL_IP, unix.IP_TRANSPARENT, 1)
-				operr = unix.SetsockoptInt(int(fd), unix.SOL_IP, unix.IP_FREEBIND, 1)
-				operr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_REUSEADDR, 1)
-			}); err != nil {
-				return err
-			}
-			return operr
-		},
-	}
-	pconn, err = lc.ListenPacket(context.Background(), "udp4", tsu.gwDNS.String())
-	if err != nil {
-		tsu.p.logger.Fatal().Err(err).Msgf("[udp %s] failed listening on gateway DNS", tsu.p.tproxyMode)
-	}
-	tsu.gwConn = pconn.(*net.UDPConn)
 	return tsu
 }
 
@@ -209,10 +209,12 @@ func (tsu *tproxyServerUDP) ListenAndServe() {
 	tsu.startingFlag.Store(true)
 	tsu.wg.Add(1)
 	go tsu.clients.Cleanup()
-	go func() {
-		tsu.listenAndServeDNS()
-		tsu.wg.Done()
-	}()
+	if tsu.p.arpspoofer != nil {
+		go func() {
+			tsu.listenAndServeDNS()
+			tsu.wg.Done()
+		}()
+	}
 	buf := make([]byte, udpBufferSize)
 	oob := make([]byte, 1500)
 	tsu.startingFlag.Store(false)
@@ -417,11 +419,11 @@ func (dc *dnsConn) close() error {
 	return dc.Close()
 }
 
-func newDNSConn(srcAddr *net.UDPAddr, mark uint) (*dnsConn, error) {
+func newDNSConn(srcAddr, dstAddr *net.UDPAddr, mark uint) (*dnsConn, error) {
 	dialer := getBaseDialer(timeout, mark)
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	conn, err := dialer.DialContext(ctx, "udp4", googleDNSAddr.String())
+	conn, err := dialer.DialContext(ctx, "udp4", dstAddr.String())
 	if err != nil {
 		return nil, err
 	}
@@ -432,7 +434,7 @@ func newDNSConn(srcAddr *net.UDPAddr, mark uint) (*dnsConn, error) {
 	return &dnsConn{
 		UDPConn:  udpConn,
 		srcAddr:  srcAddr,
-		dstAddr:  googleDNSAddr,
+		dstAddr:  dstAddr,
 		reqChan:  make(chan layers.Layer),
 		respChan: make(chan layers.Layer),
 	}, nil
@@ -456,9 +458,9 @@ func (tsu *tproxyServerUDP) listenAndServeDNS() {
 			}
 			n, srcAddr, er := tsu.gwConn.ReadFromUDP(buf)
 			if n > 0 {
-				conn, err := newDNSConn(srcAddr, tsu.p.mark)
+				conn, err := newDNSConn(srcAddr, tsu.gwDNS, tsu.p.mark)
 				if err != nil {
-					tsu.p.logger.Error().Err(err).Msgf("[udp %s] Failed creating UDP connection %s→ %s", tsu.p.tproxyMode, srcAddr, googleDNSAddr)
+					tsu.p.logger.Error().Err(err).Msgf("[udp %s] Failed creating UDP connection %s→ %s", tsu.p.tproxyMode, srcAddr, tsu.gwDNS)
 					continue
 				}
 				srcConnStr := fmt.Sprintf("%s→ %s", srcAddr, tsu.gwConn.LocalAddr())
