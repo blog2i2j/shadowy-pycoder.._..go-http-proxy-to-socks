@@ -62,7 +62,14 @@ func newUDPConn(srcAddr *net.UDPAddr, dstAddr *net.UDPAddr, sockDialer *socks5.D
 	if !ok {
 		return nil, fmt.Errorf("failed obtaining relay connection")
 	}
-	return &udpConn{UDPConn: relayConn, srcAddr: srcAddr, dstAddr: dstAddr, lastSeen: time.Now()}, nil
+	return &udpConn{
+		UDPConn:  relayConn,
+		srcAddr:  srcAddr,
+		dstAddr:  dstAddr,
+		lastSeen: time.Now(),
+		reqChan:  make(chan layers.Layer),
+		respChan: make(chan layers.Layer),
+	}, nil
 }
 
 type udpConnections struct {
@@ -585,7 +592,12 @@ func (tsu *tproxyServerUDP) handleDNSConnection(conn *dnsConn) {
 		}
 		conn.written.Add(uint64(nw))
 		if ew != nil {
-			return
+			if errors.Is(ew, net.ErrClosed) {
+				return
+			}
+			if ne, ok := ew.(net.Error); ok && ne.Timeout() {
+				return
+			}
 		}
 		if nr != nw {
 			tsu.p.logger.Debug().
