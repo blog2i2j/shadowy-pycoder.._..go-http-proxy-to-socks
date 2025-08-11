@@ -18,10 +18,10 @@ import (
 
 var (
 	ipPortPattern = regexp.MustCompile(
-		`\b(?:\d{1,3}\.){3}\d{1,3}(?::(6553[0-5]|655[0-2]\d|65[0-4]\d{2}|6[0-4]\d{3}|[1-5]?\d{1,4}))?\b`,
+		`(?:\[(?:[0-9a-fA-F:.]+)\]|(?:\d{1,3}\.){3}\d{1,3})(?::(6553[0-5]|655[0-2]\d|65[0-4]\d{2}|6[0-4]\d{3}|[1-5]?\d{1,4}))?`,
 	)
 	domainPattern = regexp.MustCompile(
-		`\b(?:[a-zA-Z0-9-]{1,63}\.)+(?:com|net|org|io|co|uk|ru|de|edu|gov|info|biz|dev|app|ai)(?::(6553[0-5]|655[0-2]\d|65[0-4]\d{2}|6[0-4]\d{3}|[1-5]?\d{1,4}))?\b`,
+		`\b(?:[a-zA-Z0-9-]{1,63}\.)+(?:com|net|org|io|co|uk|ru|de|edu|gov|info|biz|dev|app|ai|tv)(?::(6553[0-5]|655[0-2]\d|65[0-4]\d{2}|6[0-4]\d{3}|[1-5]?\d{1,4}))?\b`,
 	)
 	jwtPattern  = regexp.MustCompile(`\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b`)
 	authPattern = regexp.MustCompile(
@@ -187,9 +187,9 @@ func colorizeHTTP(
 
 func colorizeTLS(req *layers.TLSClientHello, resp *layers.TLSServerHello, id string, nocolor bool) string {
 	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("%s ", colorizeTimestamp(time.Now(), nocolor)))
+	sb.WriteString(id)
 	if nocolor {
-		sb.WriteString(fmt.Sprintf("%s ", colorizeTimestamp(time.Now(), nocolor)))
-		sb.WriteString(id)
 		sb.WriteString(fmt.Sprintf(" %s ", req.TypeDesc))
 		if req.Length > 0 {
 			sb.WriteString(fmt.Sprintf(" Len: %d", req.Length))
@@ -224,8 +224,6 @@ func colorizeTLS(req *layers.TLSClientHello, resp *layers.TLSServerHello, id str
 			sb.WriteString(fmt.Sprintf(" ExtLen: %d", resp.ExtensionLength))
 		}
 	} else {
-		sb.WriteString(fmt.Sprintf("%s ", colorizeTimestamp(time.Now(), nocolor)))
-		sb.WriteString(id)
 		sb.WriteString(colors.Magenta(fmt.Sprintf(" %s ", req.TypeDesc)).Bold())
 		if req.Length > 0 {
 			sb.WriteString(colors.BeigeBg(fmt.Sprintf(" Len: %d", req.Length)).String())
@@ -258,6 +256,98 @@ func colorizeTLS(req *layers.TLSClientHello, resp *layers.TLSServerHello, id str
 		}
 		if resp.ExtensionLength > 0 {
 			sb.WriteString(colors.BeigeBg(fmt.Sprintf(" ExtLen: %d", resp.ExtensionLength)).String())
+		}
+	}
+	return sb.String()
+}
+
+func colorizeRData(rec *layers.ResourceRecord) string {
+	var rdata string
+	switch rd := rec.RData.(type) {
+	case *layers.RDataA:
+	case *layers.RDataAAAA:
+		rdata = fmt.Sprintf("%s %s ", colors.LightBlue(rec.Type.Name), colors.Gray(rd.Address.String()))
+	case *layers.RDataNS:
+		rdata = fmt.Sprintf("%s %s ", colors.LightBlue(rec.Type.Name), colors.Gray(rd.NsdName))
+	case *layers.RDataCNAME:
+		rdata = fmt.Sprintf("%s %s ", colors.LightBlue(rec.Type.Name), colors.Gray(rd.CName))
+	case *layers.RDataSOA:
+		rdata = fmt.Sprintf("%s %s ", colors.LightBlue(rec.Type.Name), colors.Gray(rd.PrimaryNS))
+	case *layers.RDataMX:
+		rdata = fmt.Sprintf("%s %s %s ", colors.LightBlue(rec.Type.Name), colors.Gray(fmt.Sprintf("%d", rd.Preference)), colors.Gray(rd.Exchange))
+	case *layers.RDataTXT:
+		rdata = fmt.Sprintf("%s %s ", colors.LightBlue(rec.Type.Name), colors.Gray(rd.TxtData))
+	default:
+		rdata = fmt.Sprintf("%s ", colors.LightBlue(rec.Type.Name))
+	}
+	return rdata
+}
+
+func colorizeDNS(req, resp *layers.DNSMessage, id string, nocolor bool) string {
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("%s ", colorizeTimestamp(time.Now(), nocolor)))
+	sb.WriteString(id)
+	if nocolor {
+		sb.WriteString(fmt.Sprintf(" DNS %s (%s) %#04x ", req.Flags.OPCodeDesc, req.Flags.QRDesc, req.TransactionID))
+		for _, rec := range req.Questions {
+			sb.WriteString(fmt.Sprintf("%s %s ", rec.Type.Name, rec.Name))
+		}
+		for _, rec := range req.AnswerRRs {
+			sb.WriteString(rec.Summary())
+		}
+		for _, rec := range req.AuthorityRRs {
+			sb.WriteString(rec.Summary())
+		}
+		for _, rec := range req.AdditionalRRs {
+			sb.WriteString(rec.Summary())
+		}
+		sb.WriteString("\n")
+		sb.WriteString(fmt.Sprintf("%s ", colorizeTimestamp(time.Now(), nocolor)))
+		sb.WriteString(id)
+		sb.WriteString(fmt.Sprintf(" DNS %s (%s) %#04x ", resp.Flags.OPCodeDesc, resp.Flags.QRDesc, resp.TransactionID))
+		for _, rec := range resp.Questions {
+			sb.WriteString(fmt.Sprintf("%s %s ", rec.Type.Name, rec.Name))
+		}
+		for _, rec := range resp.AnswerRRs {
+			sb.WriteString(rec.Summary())
+		}
+		for _, rec := range resp.AuthorityRRs {
+			sb.WriteString(rec.Summary())
+		}
+		for _, rec := range resp.AdditionalRRs {
+			sb.WriteString(rec.Summary())
+		}
+	} else {
+		sb.WriteString(colors.Gray(fmt.Sprintf(" DNS %s (%s)", req.Flags.OPCodeDesc, req.Flags.QRDesc)).Bold())
+		sb.WriteString(colors.Beige(fmt.Sprintf(" %#04x ", req.TransactionID)).String())
+		for _, rec := range req.Questions {
+			sb.WriteString(fmt.Sprintf("%s %s ", colors.LightBlue(rec.Type.Name), colors.Gray(rec.Name)))
+		}
+		for _, rec := range req.AnswerRRs {
+			sb.WriteString(colorizeRData(rec))
+		}
+		for _, rec := range req.AuthorityRRs {
+			sb.WriteString(colorizeRData(rec))
+		}
+		for _, rec := range req.AdditionalRRs {
+			sb.WriteString(colorizeRData(rec))
+		}
+		sb.WriteString("\n")
+		sb.WriteString(fmt.Sprintf("%s ", colorizeTimestamp(time.Now(), nocolor)))
+		sb.WriteString(id)
+		sb.WriteString(colors.Blue(fmt.Sprintf(" DNS %s (%s)", resp.Flags.OPCodeDesc, resp.Flags.QRDesc)).Bold())
+		sb.WriteString(colors.Beige(fmt.Sprintf(" %#04x ", resp.TransactionID)).String())
+		for _, rec := range resp.Questions {
+			sb.WriteString(fmt.Sprintf("%s %s ", colors.LightBlue(rec.Type.Name), colors.Gray(rec.Name)))
+		}
+		for _, rec := range resp.AnswerRRs {
+			sb.WriteString(colorizeRData(rec))
+		}
+		for _, rec := range resp.AuthorityRRs {
+			sb.WriteString(colorizeRData(rec))
+		}
+		for _, rec := range resp.AdditionalRRs {
+			sb.WriteString(colorizeRData(rec))
 		}
 	}
 	return sb.String()
@@ -377,7 +467,7 @@ func colorizeConnections(srcRemote, srcLocal, dstRemote, dstLocal net.Addr, id s
 }
 
 func colorizeConnectionsTransparent(
-	srcRemote, srcLocal, dstRemote, dstLocal net.Addr,
+	srcRemote, srcLocal, dstLocal, dstRemote net.Addr,
 	dst,
 	id string,
 	nocolor bool,

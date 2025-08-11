@@ -62,6 +62,7 @@ const usageTproxy string = `
   TProxy:
   -t        Address of transparent proxy server (it starts along with HTTP proxy server)
   -T        Address of transparent proxy server (no HTTP)
+  -Tu       Address of transparent UDP proxy server
   -M        Transparent proxy mode: (redirect, tproxy)
   -auto     Automatically setup iptables for transparent proxy (requires elevated privileges)
   -arpspoof Enable ARP spoof proxy for selected targets (Example: "targets 10.0.0.1,10.0.0.5-10,192.168.1.*,192.168.10.0/24;fullduplex false;debug true")
@@ -106,6 +107,7 @@ func root(args []string) error {
 	if runtime.GOOS == tproxyOS {
 		flags.StringVar(&conf.TProxy, "t", "", "Address of transparent proxy server (it starts along with HTTP proxy server)")
 		flags.StringVar(&conf.TProxyOnly, "T", "", "Address of transparent proxy server (no HTTP)")
+		flags.StringVar(&conf.TProxyUDP, "Tu", "", "Address of transparent UDP proxy server")
 		flags.Func("M", fmt.Sprintf("Transparent proxy mode: %s", gohpts.SupportedTProxyModes), func(flagValue string) error {
 			if !slices.Contains(gohpts.SupportedTProxyModes, flagValue) {
 				fmt.Fprintf(os.Stderr, "%s: %s is not supported (type '%s -h' for help)\n", app, flagValue, app)
@@ -176,19 +178,27 @@ func root(args []string) error {
 			return fmt.Errorf("transparent proxy mode is not provided: -M flag")
 		}
 	}
+	if seen["Tu"] {
+		if !seen["M"] {
+			return fmt.Errorf("transparent proxy mode is not provided: -M flag")
+		}
+		if conf.TProxyMode != "tproxy" {
+			return fmt.Errorf("transparent UDP proxy require tproxy mode")
+		}
+	}
 	if seen["M"] {
-		if !seen["t"] && !seen["T"] {
-			return fmt.Errorf("transparent proxy mode requires -t or -T flag")
+		if !seen["t"] && !seen["T"] && !seen["Tu"] {
+			return fmt.Errorf("transparent proxy mode requires -t, -T or -Tu flag")
 		}
 	}
 	if seen["auto"] {
-		if !seen["t"] && !seen["T"] {
-			return fmt.Errorf("-auto requires -t or -T flag")
+		if !seen["t"] && !seen["T"] && !seen["Tu"] {
+			return fmt.Errorf("-auto requires -t, -T or -Tu flag")
 		}
 	}
 	if seen["mark"] {
-		if !seen["t"] && !seen["T"] {
-			return fmt.Errorf("-mark requires -t or -T flag")
+		if !seen["t"] && !seen["T"] && !seen["Tu"] {
+			return fmt.Errorf("-mark requires -t, -T or -Tu flag")
 		}
 	}
 	if seen["f"] {

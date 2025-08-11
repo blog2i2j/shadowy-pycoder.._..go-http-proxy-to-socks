@@ -20,6 +20,7 @@
 - [Transparent proxy](#transparent-proxy)
   - [redirect (via NAT and SO_ORIGINAL_DST)](#redirect-via-nat-and-so_original_dst)
   - [tproxy (via MANGLE and IP_TRANSPARENT)](#tproxy-via-mangle-and-ip_transparent)
+  - [UDP support](#udp-support)
   - [ARP spoofing](#arp-spoofing)
 - [Traffic sniffing](#traffic-sniffing)
   - [JSON format](#json-format)
@@ -62,8 +63,11 @@ Specify http server in proxy configuration of Postman
 - **Transparent proxy**\
   Supports `redirect` (SO_ORIGINAL_DST) and `tproxy` (IP_TRANSPARENT) modes
 
+- **TCP and UDP Transparent proxy**\
+  `tproxy` (IP_TRANSPARENT) handles TCP and UDP traffic
+
 - **Traffic sniffing**\
-  Proxy is able to parse HTTP headers and TLS handshake metadata
+  Proxy is able to parse HTTP headers, TLS handshake, DNS messages and more
 
 - **ARP spoofing**\
   Proxy entire subnets with ARP spoofing approach
@@ -101,7 +105,7 @@ You can download the binary for your platform from [Releases](https://github.com
 Example:
 
 ```shell
-GOHPTS_RELEASE=v1.9.4; wget -v https://github.com/shadowy-pycoder/go-http-proxy-to-socks/releases/download/$GOHPTS_RELEASE/gohpts-$GOHPTS_RELEASE-linux-amd64.tar.gz -O gohpts && tar xvzf gohpts && mv -f gohpts-$GOHPTS_RELEASE-linux-amd64 gohpts && ./gohpts -h
+GOHPTS_RELEASE=v2.0.0; wget -v https://github.com/shadowy-pycoder/go-http-proxy-to-socks/releases/download/$GOHPTS_RELEASE/gohpts-$GOHPTS_RELEASE-linux-amd64.tar.gz -O gohpts && tar xvzf gohpts && mv -f gohpts-$GOHPTS_RELEASE-linux-amd64 gohpts && ./gohpts -h
 ```
 
 Alternatively, you can install it using `go install` command (requires Go [1.24](https://go.dev/doc/install) or later):
@@ -168,6 +172,7 @@ Options:
   TProxy:
   -t        Address of transparent proxy server (it starts along with HTTP proxy server)
   -T        Address of transparent proxy server (no HTTP)
+  -Tu       Address of transparent UDP proxy server
   -M        Transparent proxy mode: (redirect, tproxy)
   -auto     Automatically setup iptables for transparent proxy (requires elevated privileges)
   -arpspoof Enable ARP spoof proxy for selected targets (Example: "targets 10.0.0.1,10.0.0.5-10,192.168.1.*,192.168.10.0/24;fullduplex false;debug true")
@@ -520,6 +525,30 @@ sudo bettercap -eval "net.probe on;net.recon on;set arp.spoof.fullduplex true;ar
 ```
 
 Check proxy logs for traffic from other devices from your LAN
+
+### UDP support
+
+`GoHPTS` has UDP support that can be enabled in `tproxy` mode. For this setup to work you need to connect to a socks5 server capable of serving UDP connections (`UDP ASSOCIATE`). For example, you can use [https://github.com/wzshiming/socks5](https://github.com/wzshiming/socks5) to deploy UDP capable socks5 server on some remote or local machine. Once you have the server to connect to, run the following command:
+
+```shell
+sudo env PATH=$PATH gohpts -s remote -Tu :8989 -M tproxy -auto -mark 100 -d
+```
+
+This command will configure your operating system and setup server on `0.0.0.0:8989` address.
+
+To test it locally, you can combine UDP transparent proxy with `-arpspoof` flag. For example:
+
+1. Setup VM on your system with any Linux distributive that supports `tproxy` (Kali Linux, for instance).
+2. Enable `bridged` network so that VM could access your host machine.
+3. Move `gohpts` binary to VM (via `ssh`, for instance) or build it there in case of different OS/arch.
+4. On your VM run the following command:
+
+```shell
+# Do not forget to replace <socks5 server> and <your host> with actual addresses
+sudo ./gohpts -s <socks5 server> -T 8888 -Tu :8989 -M tproxy -sniff -body -auto -mark 100 -d -arpspoof "targets <your host>;fullduplex true;debug false"
+```
+
+4. Check connection on your host machine, the traffic should go through Kali machine.
 
 ## Traffic sniffing
 

@@ -13,10 +13,12 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"maps"
 	"math/rand"
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
 	"runtime"
 	"slices"
@@ -65,6 +67,7 @@ type Config struct {
 	ServerConfPath string
 	TProxy         string
 	TProxyOnly     string
+	TProxyUDP      string
 	TProxyMode     string
 	Auto           bool
 	Mark           uint
@@ -135,6 +138,7 @@ type proxyapp struct {
 	httpServerAddr string
 	iface          *net.Interface
 	tproxyAddr     string
+	tproxyAddrUDP  string
 	tproxyMode     string
 	auto           bool
 	mark           uint
@@ -249,10 +253,11 @@ func New(conf *Config) *proxyapp {
 		p.logger.Fatal().Msg("Cannot specify TPRoxy and TProxyOnly at the same time")
 	} else if runtime.GOOS == "linux" && conf.TProxyMode != "" && !slices.Contains(SupportedTProxyModes, conf.TProxyMode) {
 		p.logger.Fatal().Msg("Incorrect TProxyMode provided")
-	} else if runtime.GOOS != "linux" && (conf.TProxy != "" || conf.TProxyOnly != "" || conf.TProxyMode != "") {
+	} else if runtime.GOOS != "linux" && (conf.TProxy != "" || conf.TProxyOnly != "" || conf.TProxyMode != "" || conf.TProxyUDP != "") {
 		conf.TProxy = ""
 		conf.TProxyOnly = ""
 		conf.TProxyMode = ""
+		conf.TProxyUDP = ""
 		p.logger.Warn().Msgf("[%s] functionality only available on linux systems", conf.TProxyMode)
 	}
 	p.tproxyMode = conf.TProxyMode
@@ -268,11 +273,23 @@ func New(conf *Config) *proxyapp {
 		if err != nil {
 			p.logger.Fatal().Err(err).Msg("")
 		}
+		if conf.TProxyUDP != "" {
+			if p.tproxyMode != "tproxy" {
+				p.logger.Warn().Msgf("[%s] transparent UDP server only supports tproxy mode", conf.TProxyMode)
+			}
+			p.tproxyAddrUDP, err = getFullAddress(conf.TProxyUDP, "", true)
+			if err != nil {
+				p.logger.Fatal().Err(err).Msg("")
+			}
+		}
 	} else {
 		p.tproxyAddr, err = getFullAddress(tAddr, "", false)
 		if err != nil {
 			p.logger.Fatal().Err(err).Msg("")
 		}
+	}
+	if network.AddrEqual(p.tproxyAddr, p.tproxyAddrUDP) {
+		p.logger.Fatal().Msgf("%s: address already in use", p.tproxyAddrUDP)
 	}
 	p.auto = conf.Auto
 	if p.auto && runtime.GOOS != "linux" {
@@ -484,6 +501,9 @@ func New(conf *Config) *proxyapp {
 			p.logger.Info().Msgf("REDIRECT: %s", p.tproxyAddr)
 		}
 	}
+	if p.tproxyAddrUDP != "" {
+		p.logger.Info().Msgf("TPROXY (UDP): %s", p.tproxyAddrUDP)
+	}
 	return &p
 }
 
@@ -496,11 +516,21 @@ func (p *proxyapp) Run() {
 		go p.arpspoofer.Start()
 	}
 	var tproxyServer *tproxyServer
-	var output map[string]string
+	opts := make(map[string]string, 5)
+	if p.auto {
+		p.applyCommonRedirectRules(opts)
+	}
 	if p.tproxyAddr != "" {
 		tproxyServer = newTproxyServer(p)
 		if p.auto {
-			output = tproxyServer.applyRedirectRules()
+			tproxyServer.ApplyRedirectRules(opts)
+		}
+	}
+	var tproxyServerUDP *tproxyServerUDP
+	if p.tproxyAddrUDP != "" {
+		tproxyServerUDP = newTproxyServerUDP(p)
+		if p.auto {
+			tproxyServerUDP.ApplyRedirectRules(opts)
 		}
 	}
 	if p.proxylist != nil {
@@ -525,14 +555,30 @@ func (p *proxyapp) Run() {
 			}
 			close(p.closeConn)
 			if tproxyServer != nil {
+				p.logger.Info().Msgf("[tcp %s] Server is shutting down...", p.tproxyMode)
 				if p.auto {
-					err := tproxyServer.clearRedirectRules(output)
+					err := tproxyServer.ClearRedirectRules()
 					if err != nil {
 						p.logger.Error().Err(err).Msg("Failed clearing iptables rules")
 					}
 				}
-				p.logger.Info().Msgf("[%s] Server is shutting down...", p.tproxyMode)
 				tproxyServer.Shutdown()
+			}
+			if tproxyServerUDP != nil {
+				p.logger.Info().Msgf("[udp %s] Server is shutting down...", p.tproxyMode)
+				if p.auto {
+					err := tproxyServerUDP.ClearRedirectRules()
+					if err != nil {
+						p.logger.Error().Err(err).Msg("Failed clearing iptables rules")
+					}
+				}
+				tproxyServerUDP.Shutdown()
+			}
+			if p.auto {
+				err := p.clearCommonRedirectRules(opts)
+				if err != nil {
+					p.logger.Error().Err(err).Msg("Failed clearing iptables rules")
+				}
 			}
 			p.logger.Info().Msg("Server is shutting down...")
 			ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
@@ -546,6 +592,9 @@ func (p *proxyapp) Run() {
 		}()
 		if tproxyServer != nil {
 			go tproxyServer.ListenAndServe()
+		}
+		if tproxyServerUDP != nil {
+			go tproxyServerUDP.ListenAndServe()
 		}
 		if p.user != "" && p.pass != "" {
 			p.httpServer.Handler = p.proxyAuth(p.handler())
@@ -571,18 +620,43 @@ func (p *proxyapp) Run() {
 					p.logger.Error().Err(err).Msg("Failed stopping arp spoofer")
 				}
 			}
+			close(p.closeConn)
+			if tproxyServer != nil {
+				p.logger.Info().Msgf("[tcp %s] Server is shutting down...", p.tproxyMode)
+				if p.auto {
+					err := tproxyServer.ClearRedirectRules()
+					if err != nil {
+						p.logger.Error().Err(err).Msg("Failed clearing iptables rules")
+					}
+				}
+				tproxyServer.Shutdown()
+			}
+			if tproxyServerUDP != nil {
+				p.logger.Info().Msgf("[udp %s] Server is shutting down...", p.tproxyMode)
+				if p.auto {
+					err := tproxyServerUDP.ClearRedirectRules()
+					if err != nil {
+						p.logger.Error().Err(err).Msg("Failed clearing iptables rules")
+					}
+				}
+				tproxyServerUDP.Shutdown()
+			}
 			if p.auto {
-				err := tproxyServer.clearRedirectRules(output)
+				err := p.clearCommonRedirectRules(opts)
 				if err != nil {
 					p.logger.Error().Err(err).Msg("Failed clearing iptables rules")
 				}
 			}
-			close(p.closeConn)
-			p.logger.Info().Msgf("[%s] Server is shutting down...", p.tproxyMode)
-			tproxyServer.Shutdown()
 			close(done)
 		}()
-		tproxyServer.ListenAndServe()
+		if tproxyServer != nil && tproxyServerUDP != nil {
+			go tproxyServerUDP.ListenAndServe()
+			tproxyServer.ListenAndServe()
+		} else if tproxyServer != nil {
+			tproxyServer.ListenAndServe()
+		} else {
+			tproxyServerUDP.ListenAndServe()
+		}
 	}
 	<-done
 }
@@ -619,7 +693,6 @@ func (p *proxyapp) handleForward(w http.ResponseWriter, r *http.Request) {
 	var resp *http.Response
 	var chunked bool
 	var respBodySaved []byte
-	p.httpClient.Timeout = timeout
 	if network.IsLocalAddress(r.Host) {
 		resp = p.doReq(w, req, nil)
 	} else {
@@ -749,7 +822,9 @@ func (p *proxyapp) handleTunnel(w http.ResponseWriter, r *http.Request) {
 	var dstConn net.Conn
 	var err error
 	if network.IsLocalAddress(r.Host) {
-		dstConn, err = getBaseDialer(timeout, p.mark).Dial("tcp", r.Host)
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		defer cancel()
+		dstConn, err = getBaseDialer(timeout, p.mark).DialContext(ctx, "tcp", r.Host)
 		if err != nil {
 			p.logger.Error().Err(err).Msgf("Failed connecting to %s", r.Host)
 			http.Error(w, err.Error(), http.StatusServiceUnavailable)
@@ -806,7 +881,7 @@ func (p *proxyapp) handleTunnel(w http.ResponseWriter, r *http.Request) {
 		if p.json {
 			sniffdata = append(
 				sniffdata,
-				fmt.Sprintf("{\"connection\":{\"src_remote\":%s,\"src_local\":%s,\"dst_local\":%s,\"dst_remote\":%s}}",
+				fmt.Sprintf("{\"connection\":{\"src_remote\":%q,\"src_local\":%q,\"dst_local\":%q,\"dst_remote\":%q}}",
 					srcConn.RemoteAddr(), srcConn.LocalAddr(), dstConn.LocalAddr(), dstConn.RemoteAddr()),
 			)
 			j, err := json.Marshal(&layers.HTTPMessage{Request: r})
@@ -1132,6 +1207,21 @@ func (p *proxyapp) gatherSniffData(req, resp layers.Layer, sniffdata *[]string, 
 				*sniffdata = append(*sniffdata, colorizeTLS(chs, shs, id, p.nocolor))
 			}
 		}
+	case *layers.DNSMessage:
+		rest := resp.(*layers.DNSMessage)
+		if p.json {
+			j1, err := json.Marshal(reqt)
+			if err != nil {
+				return err
+			}
+			j2, err := json.Marshal(rest)
+			if err != nil {
+				return err
+			}
+			*sniffdata = append(*sniffdata, string(j1), string(j2))
+		} else {
+			*sniffdata = append(*sniffdata, colorizeDNS(reqt, rest, id, p.nocolor))
+		}
 	}
 	return nil
 }
@@ -1139,7 +1229,7 @@ func (p *proxyapp) gatherSniffData(req, resp layers.Layer, sniffdata *[]string, 
 func (p *proxyapp) sniffreporter(wg *sync.WaitGroup, sniffdata *[]string, reqChan, respChan <-chan layers.Layer, id string) {
 	defer wg.Done()
 	sniffdatalen := len(*sniffdata)
-	var reqTLSQueue, respTLSQueue, reqHTTPQueue, respHTTPQueue []layers.Layer
+	var reqTLSQueue, respTLSQueue, reqHTTPQueue, respHTTPQueue, reqDNSQueue, respDNSQueue []layers.Layer
 	for {
 		select {
 		case req, ok := <-reqChan:
@@ -1151,6 +1241,8 @@ func (p *proxyapp) sniffreporter(wg *sync.WaitGroup, sniffdata *[]string, reqCha
 					reqTLSQueue = append(reqTLSQueue, req)
 				case *layers.HTTPMessage:
 					reqHTTPQueue = append(reqHTTPQueue, req)
+				case *layers.DNSMessage:
+					reqDNSQueue = append(reqDNSQueue, req)
 				}
 			}
 		case resp, ok := <-respChan:
@@ -1171,6 +1263,12 @@ func (p *proxyapp) sniffreporter(wg *sync.WaitGroup, sniffdata *[]string, reqCha
 						respHTTPQueue = append(respHTTPQueue, resp)
 					} else if len(reqHTTPQueue) == 0 && len(respHTTPQueue) == 1 {
 						respHTTPQueue = respHTTPQueue[1:]
+					}
+				case *layers.DNSMessage:
+					if len(reqDNSQueue) > 0 || len(respDNSQueue) == 0 {
+						respDNSQueue = append(respDNSQueue, resp)
+					} else if len(reqDNSQueue) == 0 && len(respDNSQueue) == 1 {
+						respDNSQueue = respDNSQueue[1:]
 					}
 				}
 			}
@@ -1196,6 +1294,22 @@ func (p *proxyapp) sniffreporter(wg *sync.WaitGroup, sniffdata *[]string, reqCha
 			resp := respTLSQueue[0]
 			reqTLSQueue = reqTLSQueue[1:]
 			respTLSQueue = respTLSQueue[1:]
+
+			err := p.gatherSniffData(req, resp, sniffdata, id)
+			if err == nil && len(*sniffdata) > sniffdatalen {
+				if p.json {
+					p.snifflogger.Log().Msg(fmt.Sprintf("[%s]", strings.Join(*sniffdata, ",")))
+				} else {
+					p.snifflogger.Log().Msg(strings.Join(*sniffdata, "\n"))
+				}
+			}
+			*sniffdata = (*sniffdata)[:sniffdatalen]
+		}
+		if len(reqDNSQueue) > 0 && len(respDNSQueue) > 0 {
+			req := reqDNSQueue[0]
+			resp := respDNSQueue[0]
+			reqDNSQueue = reqDNSQueue[1:]
+			respDNSQueue = respDNSQueue[1:]
 
 			err := p.gatherSniffData(req, resp, sniffdata, id)
 			if err == nil && len(*sniffdata) > sniffdatalen {
@@ -1316,4 +1430,128 @@ func (p *proxyapp) proxyAuth(next http.HandlerFunc) http.HandlerFunc {
 		w.Header().Set("Proxy-Authenticate", `Basic realm="restricted", charset="UTF-8"`)
 		http.Error(w, "Proxy Authentication Required", http.StatusProxyAuthRequired)
 	})
+}
+
+func (p *proxyapp) applyCommonRedirectRules(opts map[string]string) {
+	var setex string
+	if p.debug {
+		setex = "set -ex"
+	}
+	if p.tproxyMode == "tproxy" {
+		cmdClear := exec.Command("bash", "-c", fmt.Sprintf(`
+        %s
+        iptables -t mangle -F DIVERT 2>/dev/null || true
+        iptables -t mangle -X DIVERT 2>/dev/null || true
+
+        ip rule del fwmark 1 lookup 100 2>/dev/null || true
+        ip route flush table 100 2>/dev/null || true
+        `, setex))
+		cmdClear.Stdout = os.Stdout
+		cmdClear.Stderr = os.Stderr
+		if err := cmdClear.Run(); err != nil {
+			p.logger.Fatal().Err(err).Msg("Failed while configuring iptables. Are you root?")
+		}
+		cmdInit0 := exec.Command("bash", "-c", fmt.Sprintf(`
+        %s
+        ip rule add fwmark 1 lookup 100 2>/dev/null || true
+        ip route add local 0.0.0.0/0 dev lo table 100 2>/dev/null || true
+
+        iptables -t mangle -N DIVERT 2>/dev/null || true
+        iptables -t mangle -F DIVERT 2>/dev/null || true
+        iptables -t mangle -A DIVERT -j MARK --set-mark 1
+        iptables -t mangle -A DIVERT -j ACCEPT
+        `, setex))
+		cmdInit0.Stdout = os.Stdout
+		cmdInit0.Stderr = os.Stderr
+		if err := cmdInit0.Run(); err != nil {
+			p.logger.Fatal().Err(err).Msg("Failed while configuring iptables. Are you root?")
+		}
+	}
+
+	_ = createSysctlOptCmd("net.ipv4.ip_forward", "1", setex, opts, p.debug).Run()
+	cmdClearForward := exec.Command("bash", "-c", fmt.Sprintf(`
+	%s
+	iptables -t filter -F GOHPTS 2>/dev/null || true
+	iptables -t filter -D FORWARD -j GOHPTS  2>/dev/null || true
+	iptables -t filter -X GOHPTS  2>/dev/null || true
+	`, setex))
+	cmdClearForward.Stdout = os.Stdout
+	cmdClearForward.Stderr = os.Stderr
+	if err := cmdClearForward.Run(); err != nil {
+		p.logger.Fatal().Err(err).Msg("Failed while configuring iptables. Are you root?")
+	}
+	var iface *net.Interface
+	var err error
+	if p.iface != nil {
+		iface = p.iface
+	} else {
+		iface, err = network.GetDefaultInterface()
+		if err != nil {
+			p.logger.Fatal().Err(err).Msg("failed getting default network interface")
+		}
+	}
+	cmdForwardFilter := exec.Command("bash", "-c", fmt.Sprintf(`
+	%s
+	iptables -t filter -N GOHPTS 2>/dev/null
+	iptables -t filter -F GOHPTS
+	iptables -t filter -A FORWARD -j GOHPTS
+	iptables -t filter -A GOHPTS -i %s -j ACCEPT
+	iptables -t filter -A GOHPTS -o %s -j ACCEPT
+	`, setex, iface.Name, iface.Name))
+	cmdForwardFilter.Stdout = os.Stdout
+	cmdForwardFilter.Stderr = os.Stderr
+	if err := cmdForwardFilter.Run(); err != nil {
+		p.logger.Fatal().Err(err).Msg("Failed while configuring iptables. Are you root?")
+	}
+}
+
+func (p *proxyapp) clearCommonRedirectRules(opts map[string]string) error {
+	var setex string
+	if p.debug {
+		setex = "set -ex"
+	}
+	cmdClear := exec.Command("bash", "-c", fmt.Sprintf(`
+	%s
+	iptables -t filter -F GOHPTS 2>/dev/null || true
+	iptables -t filter -D FORWARD -j GOHPTS  2>/dev/null || true
+	iptables -t filter -X GOHPTS  2>/dev/null || true
+	`, setex))
+	cmdClear.Stdout = os.Stdout
+	cmdClear.Stderr = os.Stderr
+	if err := cmdClear.Run(); err != nil {
+		p.logger.Fatal().Err(err).Msg("Failed while configuring iptables. Are you root?")
+	}
+	cmds := make([]string, 0, len(opts))
+	for _, cmd := range slices.Sorted(maps.Keys(opts)) {
+		cmds = append(cmds, fmt.Sprintf("sysctl -w %s=%s", cmd, opts[cmd]))
+	}
+	cmdRestoreOpts := exec.Command("bash", "-c", fmt.Sprintf(`
+        %s
+		%s
+        `, setex, strings.Join(cmds, "\n")))
+	cmdRestoreOpts.Stdout = os.Stdout
+	cmdRestoreOpts.Stderr = os.Stderr
+	if !p.debug {
+		cmdRestoreOpts.Stdout = nil
+	}
+	_ = cmdRestoreOpts.Run()
+	if p.tproxyMode == "tproxy" {
+		cmd := exec.Command("bash", "-c", fmt.Sprintf(`
+        %s
+        iptables -t mangle -F DIVERT 2>/dev/null || true
+        iptables -t mangle -X DIVERT 2>/dev/null || true
+
+        ip rule del fwmark 1 lookup 100 2>/dev/null || true
+        ip route flush table 100 2>/dev/null || true
+        `, setex))
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		if !p.debug {
+			cmd.Stdout = nil
+		}
+		if err := cmd.Run(); err != nil {
+			return err
+		}
+	}
+	return nil
 }

@@ -7,14 +7,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"maps"
 	"net"
 	"net/netip"
 	"os"
 	"os/exec"
-	"slices"
-	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 	"unsafe"
@@ -25,10 +23,11 @@ import (
 )
 
 type tproxyServer struct {
-	listener net.Listener
-	quit     chan struct{}
-	wg       sync.WaitGroup
-	p        *proxyapp
+	listener     net.Listener
+	quit         chan struct{}
+	wg           sync.WaitGroup
+	p            *proxyapp
+	startingFlag atomic.Bool
 }
 
 func newTproxyServer(p *proxyapp) *tproxyServer {
@@ -66,8 +65,10 @@ func newTproxyServer(p *proxyapp) *tproxyServer {
 }
 
 func (ts *tproxyServer) ListenAndServe() {
+	ts.startingFlag.Store(true)
 	ts.wg.Add(1)
 	go ts.serve()
+	ts.startingFlag.Store(false)
 }
 
 func (ts *tproxyServer) serve() {
@@ -118,11 +119,11 @@ func (ts *tproxyServer) getOriginalDst(rawConn syscall.RawConn) (string, error) 
 		optlen := uint32(unsafe.Sizeof(originalDst))
 		err := getsockopt(int(fd), unix.SOL_IP, unix.SO_ORIGINAL_DST, unsafe.Pointer(&originalDst), &optlen)
 		if err != nil {
-			ts.p.logger.Error().Err(err).Msgf("[%s] getsockopt SO_ORIGINAL_DST failed", ts.p.tproxyMode)
+			ts.p.logger.Error().Err(err).Msgf("[tcp %s] getsockopt SO_ORIGINAL_DST failed", ts.p.tproxyMode)
 		}
 	})
 	if err != nil {
-		ts.p.logger.Error().Err(err).Msgf("[%s] Failed invoking control connection", ts.p.tproxyMode)
+		ts.p.logger.Error().Err(err).Msgf("[tcp %s] Failed invoking control connection", ts.p.tproxyMode)
 		return "", err
 	}
 	dstHost := netip.AddrFrom4(originalDst.Addr)
@@ -141,38 +142,38 @@ func (ts *tproxyServer) handleConnection(srcConn net.Conn) {
 	case "redirect":
 		rawConn, err := srcConn.(*net.TCPConn).SyscallConn()
 		if err != nil {
-			ts.p.logger.Error().Err(err).Msgf("[%s] Failed to get raw connection", ts.p.tproxyMode)
+			ts.p.logger.Error().Err(err).Msgf("[tcp %s] Failed to get raw connection", ts.p.tproxyMode)
 			return
 		}
 		dst, err = ts.getOriginalDst(rawConn)
 		if err != nil {
-			ts.p.logger.Error().Err(err).Msgf("[%s] Failed to get destination address", ts.p.tproxyMode)
+			ts.p.logger.Error().Err(err).Msgf("[tcp %s] Failed to get destination address", ts.p.tproxyMode)
 			return
 		}
-		ts.p.logger.Debug().Msgf("[%s] getsockopt SO_ORIGINAL_DST %s", ts.p.tproxyMode, dst)
 	case "tproxy":
 		dst = srcConn.LocalAddr().String()
-		ts.p.logger.Debug().Msgf("[%s] IP_TRANSPARENT %s", ts.p.tproxyMode, dst)
 	default:
 		ts.p.logger.Fatal().Msg("Unknown tproxyMode")
 	}
 	if network.IsLocalAddress(dst) {
-		dstConn, err = getBaseDialer(timeout, ts.p.mark).Dial("tcp", dst)
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		defer cancel()
+		dstConn, err = getBaseDialer(timeout, ts.p.mark).DialContext(ctx, "tcp", dst)
 		if err != nil {
-			ts.p.logger.Error().Err(err).Msgf("[%s] Failed connecting to %s", ts.p.tproxyMode, dst)
+			ts.p.logger.Error().Err(err).Msgf("[tcp %s] Failed connecting to %s", ts.p.tproxyMode, dst)
 			return
 		}
 	} else {
 		sockDialer, _, err := ts.p.getSocks()
 		if err != nil {
-			ts.p.logger.Error().Err(err).Msgf("[%s] Failed getting SOCKS5 client", ts.p.tproxyMode)
+			ts.p.logger.Error().Err(err).Msgf("[tcp %s] Failed getting SOCKS5 client", ts.p.tproxyMode)
 			return
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), timeout)
 		defer cancel()
 		dstConn, err = sockDialer.DialContext(ctx, "tcp", dst)
 		if err != nil {
-			ts.p.logger.Error().Err(err).Msgf("[%s] Failed connecting to %s", ts.p.tproxyMode, dst)
+			ts.p.logger.Error().Err(err).Msgf("[tcp %s] Failed connecting to %s", ts.p.tproxyMode, dst)
 			return
 		}
 	}
@@ -181,7 +182,7 @@ func (ts *tproxyServer) handleConnection(srcConn net.Conn) {
 	dstConnStr := fmt.Sprintf("%s→ %s→ %s", dstConn.LocalAddr().String(), dstConn.RemoteAddr().String(), dst)
 	srcConnStr := fmt.Sprintf("%s→ %s", srcConn.RemoteAddr().String(), srcConn.LocalAddr().String())
 
-	ts.p.logger.Debug().Msgf("[%s] src: %s - dst: %s", ts.p.tproxyMode, srcConnStr, dstConnStr)
+	ts.p.logger.Debug().Msgf("[tcp %s] src: %s - dst: %s", ts.p.tproxyMode, srcConnStr, dstConnStr)
 
 	reqChan := make(chan layers.Layer)
 	respChan := make(chan layers.Layer)
@@ -197,7 +198,7 @@ func (ts *tproxyServer) handleConnection(srcConn net.Conn) {
 			sniffheader = append(
 				sniffheader,
 				fmt.Sprintf(
-					"{\"connection\":{\"tproxy_mode\":%s,\"src_remote\":%s,\"src_local\":%s,\"dst_local\":%s,\"dst_remote\":%s,\"original_dst\":%s}}",
+					"{\"connection\":{\"tproxy_mode\":%q,\"src_remote\":%q,\"src_local\":%q,\"dst_local\":%q,\"dst_remote\":%q,\"original_dst\":%q}}",
 					ts.p.tproxyMode,
 					srcConn.RemoteAddr(),
 					srcConn.LocalAddr(),
@@ -210,8 +211,8 @@ func (ts *tproxyServer) handleConnection(srcConn net.Conn) {
 			connections := colorizeConnectionsTransparent(
 				srcConn.RemoteAddr(),
 				srcConn.LocalAddr(),
-				dstConn.RemoteAddr(),
 				dstConn.LocalAddr(),
+				dstConn.RemoteAddr(),
 				dst, id, ts.p.nocolor)
 			sniffheader = append(sniffheader, connections)
 		}
@@ -221,6 +222,9 @@ func (ts *tproxyServer) handleConnection(srcConn net.Conn) {
 }
 
 func (ts *tproxyServer) Shutdown() {
+	for ts.startingFlag.Load() {
+		time.Sleep(50 * time.Millisecond)
+	}
 	close(ts.quit)
 	ts.listener.Close()
 	done := make(chan struct{})
@@ -231,42 +235,20 @@ func (ts *tproxyServer) Shutdown() {
 
 	select {
 	case <-done:
-		ts.p.logger.Info().Msgf("[%s] Server gracefully shutdown", ts.p.tproxyMode)
+		ts.p.logger.Info().Msgf("[tcp %s] Server gracefully shutdown", ts.p.tproxyMode)
 		return
 	case <-time.After(shutdownTimeout):
-		ts.p.logger.Error().Msgf("[%s] Server timed out waiting for connections to finish", ts.p.tproxyMode)
+		ts.p.logger.Error().Msgf("[tcp %s] Server timed out waiting for connections to finish", ts.p.tproxyMode)
 		return
 	}
 }
 
-func (ts *tproxyServer) createSysctlOptCmd(opt, value, setex string, opts map[string]string) *exec.Cmd {
-	cmdCat := exec.Command("bash", "-c", fmt.Sprintf(`
-    cat /proc/sys/%s
-    `, strings.ReplaceAll(opt, ".", "/")))
-	output, err := cmdCat.CombinedOutput()
-	if err != nil {
-		ts.p.logger.Fatal().Err(err).Msg("Failed while configuring iptables. Are you root?")
-	}
-	opts[opt] = string(output)
-	cmd := exec.Command("bash", "-c", fmt.Sprintf(`
-    %s
-    sysctl -w %s=%s
-    `, setex, opt, value))
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	if !ts.p.debug {
-		cmd.Stdout = nil
-	}
-	return cmd
-}
-
-func (ts *tproxyServer) applyRedirectRules() map[string]string {
+func (ts *tproxyServer) ApplyRedirectRules(opts map[string]string) {
 	_, tproxyPort, _ := net.SplitHostPort(ts.p.tproxyAddr)
 	var setex string
 	if ts.p.debug {
 		setex = "set -ex"
 	}
-	ipv4Settings := make(map[string]string, 5)
 	switch ts.p.tproxyMode {
 	case "redirect":
 		cmdClear := exec.Command("bash", "-c", fmt.Sprintf(`
@@ -279,20 +261,20 @@ func (ts *tproxyServer) applyRedirectRules() map[string]string {
 		cmdClear.Stdout = os.Stdout
 		cmdClear.Stderr = os.Stderr
 		if err := cmdClear.Run(); err != nil {
-			ts.p.logger.Fatal().Err(err).Msg("Failed while configuring iptables. Are you root?")
+			ts.p.logger.Fatal().Err(err).Msgf("[tcp %s] Failed while configuring iptables. Are you root?", ts.p.tproxyMode)
 		}
 		cmdInit := exec.Command("bash", "-c", fmt.Sprintf(`
 		%s
         iptables -t nat -N GOHPTS 2>/dev/null
         iptables -t nat -F GOHPTS
 
-        iptables -t nat -A GOHPTS -d 127.0.0.0/8 -j RETURN
+        iptables -t nat -A GOHPTS -p tcp -d 127.0.0.0/8 -j RETURN
         iptables -t nat -A GOHPTS -p tcp --dport 22 -j RETURN
         `, setex))
 		cmdInit.Stdout = os.Stdout
 		cmdInit.Stderr = os.Stderr
 		if err := cmdInit.Run(); err != nil {
-			ts.p.logger.Fatal().Err(err).Msg("Failed while configuring iptables. Are you root?")
+			ts.p.logger.Fatal().Err(err).Msgf("[tcp %s] Failed while configuring iptables. Are you root?", ts.p.tproxyMode)
 		}
 		if ts.p.httpServerAddr != "" {
 			_, httpPort, _ := net.SplitHostPort(ts.p.httpServerAddr)
@@ -303,7 +285,7 @@ func (ts *tproxyServer) applyRedirectRules() map[string]string {
 			cmdHTTP.Stdout = os.Stdout
 			cmdHTTP.Stderr = os.Stderr
 			if err := cmdHTTP.Run(); err != nil {
-				ts.p.logger.Fatal().Err(err).Msg("Failed while configuring iptables. Are you root?")
+				ts.p.logger.Fatal().Err(err).Msgf("[tcp %s] Failed while configuring iptables. Are you root?", ts.p.tproxyMode)
 			}
 		}
 		if ts.p.mark > 0 {
@@ -314,7 +296,7 @@ func (ts *tproxyServer) applyRedirectRules() map[string]string {
 			cmdMark.Stdout = os.Stdout
 			cmdMark.Stderr = os.Stderr
 			if err := cmdMark.Run(); err != nil {
-				ts.p.logger.Fatal().Err(err).Msg("Failed while configuring iptables. Are you root?")
+				ts.p.logger.Fatal().Err(err).Msgf("[tcp %s] Failed while configuring iptables. Are you root?", ts.p.tproxyMode)
 			}
 		} else {
 			cmd0 := exec.Command("bash", "-c", fmt.Sprintf(`
@@ -324,7 +306,7 @@ func (ts *tproxyServer) applyRedirectRules() map[string]string {
 			cmd0.Stdout = os.Stdout
 			cmd0.Stderr = os.Stderr
 			if err := cmd0.Run(); err != nil {
-				ts.p.logger.Fatal().Err(err).Msg("Failed while configuring iptables. Are you root?")
+				ts.p.logger.Fatal().Err(err).Msgf("[tcp %s] Failed while configuring iptables. Are you root?", ts.p.tproxyMode)
 			}
 			if len(ts.p.proxylist) > 0 {
 				for _, pr := range ts.p.proxylist {
@@ -336,7 +318,7 @@ func (ts *tproxyServer) applyRedirectRules() map[string]string {
 					cmd1.Stdout = os.Stdout
 					cmd1.Stderr = os.Stderr
 					if err := cmd1.Run(); err != nil {
-						ts.p.logger.Fatal().Err(err).Msg("Failed while configuring iptables. Are you root?")
+						ts.p.logger.Fatal().Err(err).Msgf("[tcp %s] Failed while configuring iptables. Are you root?", ts.p.tproxyMode)
 					}
 					if ts.p.proxychain.Type == "strict" {
 						break
@@ -349,7 +331,7 @@ func (ts *tproxyServer) applyRedirectRules() map[string]string {
         if command -v docker >/dev/null 2>&1
         then
             for subnet in $(docker network inspect $(docker network ls -q) --format '{{range .IPAM.Config}}{{.Subnet}}{{end}}'); do
-              iptables -t nat -A GOHPTS -d "$subnet" -j RETURN
+              iptables -t nat -A GOHPTS -p tcp -d "$subnet" -j RETURN
             done
         fi
 
@@ -364,59 +346,47 @@ func (ts *tproxyServer) applyRedirectRules() map[string]string {
 		cmdDocker.Stdout = os.Stdout
 		cmdDocker.Stderr = os.Stderr
 		if err := cmdDocker.Run(); err != nil {
-			ts.p.logger.Fatal().Err(err).Msg("Failed while configuring iptables. Are you root?")
+			ts.p.logger.Fatal().Err(err).Msgf("[tcp %s] Failed while configuring iptables. Are you root?", ts.p.tproxyMode)
 		}
 	case "tproxy":
 		cmdClear := exec.Command("bash", "-c", fmt.Sprintf(`
         %s
         iptables -t mangle -D PREROUTING -p tcp -m socket -j DIVERT 2>/dev/null || true
         iptables -t mangle -D PREROUTING -p tcp -j GOHPTS 2>/dev/null || true
-        iptables -t mangle -F DIVERT 2>/dev/null || true
         iptables -t mangle -F GOHPTS 2>/dev/null || true
-        iptables -t mangle -X DIVERT 2>/dev/null || true
         iptables -t mangle -X GOHPTS 2>/dev/null || true
-
-        ip rule del fwmark 1 lookup 100 2>/dev/null || true
-        ip route flush table 100 2>/dev/null || true
         `, setex))
 		cmdClear.Stdout = os.Stdout
 		cmdClear.Stderr = os.Stderr
 		if err := cmdClear.Run(); err != nil {
-			ts.p.logger.Fatal().Err(err).Msg("Failed while configuring iptables. Are you root?")
+			ts.p.logger.Fatal().Err(err).Msgf("[tcp %s] Failed while configuring iptables. Are you root?", ts.p.tproxyMode)
 		}
 		cmdInit0 := exec.Command("bash", "-c", fmt.Sprintf(`
         %s
-        ip rule add fwmark 1 lookup 100 2>/dev/null || true
-        ip route add local 0.0.0.0/0 dev lo table 100 2>/dev/null || true
-
-        iptables -t mangle -N DIVERT 2>/dev/null || true
-        iptables -t mangle -F DIVERT
-        iptables -t mangle -A DIVERT -j MARK --set-mark 1
-        iptables -t mangle -A DIVERT -j ACCEPT
-
         iptables -t mangle -N GOHPTS 2>/dev/null || true
         iptables -t mangle -F GOHPTS
-        iptables -t mangle -A GOHPTS -d 127.0.0.0/8 -j RETURN
-        iptables -t mangle -A GOHPTS -d 224.0.0.0/4 -j RETURN
-        iptables -t mangle -A GOHPTS -d 255.255.255.255/32 -j RETURN
+
+        iptables -t mangle -A GOHPTS -p tcp -d 127.0.0.0/8 -j RETURN
+        iptables -t mangle -A GOHPTS -p tcp -d 224.0.0.0/4 -j RETURN
+        iptables -t mangle -A GOHPTS -p tcp -d 255.255.255.255/32 -j RETURN
         `, setex))
 		cmdInit0.Stdout = os.Stdout
 		cmdInit0.Stderr = os.Stderr
 		if err := cmdInit0.Run(); err != nil {
-			ts.p.logger.Fatal().Err(err).Msg("Failed while configuring iptables. Are you root?")
+			ts.p.logger.Fatal().Err(err).Msgf("[tcp %s] Failed while configuring iptables. Are you root?", ts.p.tproxyMode)
 		}
 		cmdDocker := exec.Command("bash", "-c", fmt.Sprintf(`
         %s
         if command -v docker >/dev/null 2>&1
         then
             for subnet in $(docker network inspect $(docker network ls -q) --format '{{range .IPAM.Config}}{{.Subnet}}{{end}}'); do
-              iptables -t mangle -A GOHPTS -d "$subnet" -j RETURN
+              iptables -t mangle -A GOHPTS -p tcp -d "$subnet" -j RETURN
             done
         fi`, setex))
 		cmdDocker.Stdout = os.Stdout
 		cmdDocker.Stderr = os.Stderr
 		if err := cmdDocker.Run(); err != nil {
-			ts.p.logger.Fatal().Err(err).Msg("Failed while configuring iptables. Are you root?")
+			ts.p.logger.Fatal().Err(err).Msgf("[tcp %s] Failed while configuring iptables. Are you root?", ts.p.tproxyMode)
 		}
 		cmdInit := exec.Command("bash", "-c", fmt.Sprintf(`
         %s
@@ -429,12 +399,11 @@ func (ts *tproxyServer) applyRedirectRules() map[string]string {
 		cmdInit.Stdout = os.Stdout
 		cmdInit.Stderr = os.Stderr
 		if err := cmdInit.Run(); err != nil {
-			ts.p.logger.Fatal().Err(err).Msg("Failed while configuring iptables. Are you root?")
+			ts.p.logger.Fatal().Err(err).Msgf("[tcp %s] Failed while configuring iptables. Are you root?", ts.p.tproxyMode)
 		}
 	default:
 		ts.p.logger.Fatal().Msgf("Unreachable, unknown mode: %s", ts.p.tproxyMode)
 	}
-	_ = ts.createSysctlOptCmd("net.ipv4.ip_forward", "1", setex, ipv4Settings).Run()
 	cmdCheckBBR := exec.Command("bash", "-c", fmt.Sprintf(`
     %s
 	lsmod | grep -q '^tcp_bbr' || modprobe tcp_bbr
@@ -445,77 +414,17 @@ func (ts *tproxyServer) applyRedirectRules() map[string]string {
 		cmdCheckBBR.Stdout = nil
 	}
 	_ = cmdCheckBBR.Run()
-	_ = ts.createSysctlOptCmd("net.ipv4.tcp_congestion_control", "bbr", setex, ipv4Settings).Run()
-	_ = ts.createSysctlOptCmd("net.core.default_qdisc", "fq", setex, ipv4Settings).Run()
-	_ = ts.createSysctlOptCmd("net.ipv4.tcp_tw_reuse", "1", setex, ipv4Settings).Run()
-	_ = ts.createSysctlOptCmd("net.ipv4.tcp_fin_timeout", "15", setex, ipv4Settings).Run()
-	cmdClearForward := exec.Command("bash", "-c", fmt.Sprintf(`
-	%s
-	iptables -t filter -F GOHPTS 2>/dev/null || true
-	iptables -t filter -D FORWARD -j GOHPTS  2>/dev/null || true
-	iptables -t filter -X GOHPTS  2>/dev/null || true
-	`, setex))
-	cmdClearForward.Stdout = os.Stdout
-	cmdClearForward.Stderr = os.Stderr
-	if err := cmdClearForward.Run(); err != nil {
-		ts.p.logger.Fatal().Err(err).Msg("Failed while configuring iptables. Are you root?")
-	}
-	var iface *net.Interface
-	var err error
-	if ts.p.iface != nil {
-		iface = ts.p.iface
-	} else {
-		iface, err = network.GetDefaultInterface()
-		if err != nil {
-			ts.p.logger.Fatal().Err(err).Msg("failed getting default network interface")
-		}
-	}
-	cmdForwardFilter := exec.Command("bash", "-c", fmt.Sprintf(`
-	%s
-	iptables -t filter -N GOHPTS 2>/dev/null
-	iptables -t filter -F GOHPTS
-	iptables -t filter -A FORWARD -j GOHPTS
-	iptables -t filter -A GOHPTS -i %s -j ACCEPT
-	iptables -t filter -A GOHPTS -o %s -j ACCEPT
-	`, setex, iface.Name, iface.Name))
-	cmdForwardFilter.Stdout = os.Stdout
-	cmdForwardFilter.Stderr = os.Stderr
-	if err := cmdForwardFilter.Run(); err != nil {
-		ts.p.logger.Fatal().Err(err).Msg("Failed while configuring iptables. Are you root?")
-	}
-	return ipv4Settings
+	_ = createSysctlOptCmd("net.ipv4.tcp_congestion_control", "bbr", setex, opts, ts.p.debug).Run()
+	_ = createSysctlOptCmd("net.core.default_qdisc", "fq", setex, opts, ts.p.debug).Run()
+	_ = createSysctlOptCmd("net.ipv4.tcp_tw_reuse", "1", setex, opts, ts.p.debug).Run()
+	_ = createSysctlOptCmd("net.ipv4.tcp_fin_timeout", "15", setex, opts, ts.p.debug).Run()
 }
 
-func (ts *tproxyServer) clearRedirectRules(opts map[string]string) error {
+func (ts *tproxyServer) ClearRedirectRules() error {
 	var setex string
 	if ts.p.debug {
 		setex = "set -ex"
 	}
-	cmdClear := exec.Command("bash", "-c", fmt.Sprintf(`
-	%s
-	iptables -t filter -F GOHPTS 2>/dev/null || true
-	iptables -t filter -D FORWARD -j GOHPTS  2>/dev/null || true
-	iptables -t filter -X GOHPTS  2>/dev/null || true
-	`, setex))
-	cmdClear.Stdout = os.Stdout
-	cmdClear.Stderr = os.Stderr
-	if err := cmdClear.Run(); err != nil {
-		ts.p.logger.Fatal().Err(err).Msg("Failed while configuring iptables. Are you root?")
-	}
-	cmds := make([]string, 0, len(opts))
-	for _, cmd := range slices.Sorted(maps.Keys(opts)) {
-		cmds = append(cmds, fmt.Sprintf("sysctl -w %s=%s", cmd, opts[cmd]))
-	}
-	cmdRestoreOpts := exec.Command("bash", "-c", fmt.Sprintf(`
-        %s
-		%s
-        `, setex, strings.Join(cmds, "\n")))
-	cmdRestoreOpts.Stdout = os.Stdout
-	cmdRestoreOpts.Stderr = os.Stderr
-	if !ts.p.debug {
-		cmdRestoreOpts.Stdout = nil
-	}
-	_ = cmdRestoreOpts.Run()
 	var cmd *exec.Cmd
 	switch ts.p.tproxyMode {
 	case "redirect":
@@ -533,13 +442,8 @@ func (ts *tproxyServer) clearRedirectRules(opts map[string]string) error {
         %s
         iptables -t mangle -D PREROUTING -p tcp -m socket -j DIVERT 2>/dev/null || true
         iptables -t mangle -D PREROUTING -p tcp -j GOHPTS 2>/dev/null || true
-        iptables -t mangle -F DIVERT 2>/dev/null || true
         iptables -t mangle -F GOHPTS 2>/dev/null || true
-        iptables -t mangle -X DIVERT 2>/dev/null || true
         iptables -t mangle -X GOHPTS 2>/dev/null || true
-
-        ip rule del fwmark 1 lookup 100 2>/dev/null || true
-        ip route flush table 100 2>/dev/null || true
         `, setex))
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
