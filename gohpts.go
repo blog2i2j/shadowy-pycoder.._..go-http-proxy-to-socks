@@ -17,6 +17,7 @@ import (
 	"math/rand"
 	"net"
 	"net/http"
+	"net/http/pprof"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -57,6 +58,7 @@ var (
 type Config struct {
 	AddrHTTP       string
 	AddrSOCKS      string
+	AddrPprof      string
 	User           string
 	Pass           string
 	ServerUser     string
@@ -136,6 +138,7 @@ type proxyapp struct {
 	certFile       string
 	keyFile        string
 	httpServerAddr string
+	pprofAddr      string
 	iface          *net.Interface
 	tproxyAddr     string
 	tproxyAddrUDP  string
@@ -244,6 +247,12 @@ func New(conf *Config) *proxyapp {
 		lvl = zerolog.DebugLevel
 	}
 	p.debug = conf.Debug
+	if conf.AddrPprof != "" {
+		p.pprofAddr, err = getFullAddress(conf.AddrPprof, "", false)
+		if err != nil {
+			p.logger.Fatal().Err(err).Msg("")
+		}
+	}
 	// the only way I found to make debug level independent between loggers
 	l := logger.Level(lvl)
 	sl := snifflogger.Level(lvl)
@@ -504,6 +513,9 @@ func New(conf *Config) *proxyapp {
 	if p.tproxyAddrUDP != "" {
 		p.logger.Info().Msgf("TPROXY (UDP): %s", p.tproxyAddrUDP)
 	}
+	if p.pprofAddr != "" {
+		p.logger.Info().Msgf("PPROF: %s", p.pprofAddr)
+	}
 	return &p
 }
 
@@ -512,6 +524,15 @@ func (p *proxyapp) Run() {
 	quit := make(chan os.Signal, 1)
 	p.closeConn = make(chan bool)
 	signal.Notify(quit, os.Interrupt)
+	if p.pprofAddr != "" {
+		sm := http.NewServeMux()
+		sm.HandleFunc("/debug/pprof/", pprof.Index)
+		sm.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
+		sm.HandleFunc("/debug/pprof/profile", pprof.Profile)
+		sm.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
+		sm.HandleFunc("/debug/pprof/trace", pprof.Trace)
+		go http.ListenAndServe(p.pprofAddr, sm)
+	}
 	if p.arpspoofer != nil {
 		go p.arpspoofer.Start()
 	}

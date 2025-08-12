@@ -51,6 +51,7 @@ Options:
   -j        Show logs in JSON format
   -logfile  Log file path (Default: stdout)
   -nocolor  Disable colored output for logs (no effect if -j flag specified)
+  -pprof    Address of pprof server with profiling data
 
   Sniffing:
   -sniff    Enable traffic sniffing for HTTP and TLS
@@ -140,6 +141,7 @@ func root(args []string) error {
 	flags.BoolVar(&conf.JSON, "j", false, "Show logs in JSON format")
 	flags.BoolVar(&conf.Sniff, "sniff", false, "Enable traffic sniffing for HTTP and TLS")
 	flags.StringVar(&conf.SniffLogFile, "snifflog", "", "Sniffed traffic log file path (Default: the same as -logfile)")
+	flags.StringVar(&conf.AddrPprof, "pprof", "", "Address of pprof server with profiling data")
 	flags.BoolVar(&conf.NoColor, "nocolor", false, "Disable colored output for logs (no effect if -j flag specified)")
 	flags.BoolVar(&conf.Body, "body", false, "Collect request and response body for HTTP traffic (credentials, tokens, etc)")
 	flags.BoolFunc("v", "Show version and build information", func(flagValue string) error {
