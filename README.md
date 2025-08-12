@@ -1,4 +1,4 @@
-# GoHPTS - HTTP(S) proxy to SOCKS5 proxy (chain) written in Go
+# GoHPTS - HTTP(S) and TCP/UDP transparent proxy to SOCKS5 proxy (chain) written in Go
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Go Reference](https://pkg.go.dev/badge/github.com/shadowy-pycoder/go-http-proxy-to-socks.svg)](https://pkg.go.dev/github.com/shadowy-pycoder/go-http-proxy-to-socks)
@@ -6,6 +6,7 @@
 [![Go Report Card](https://goreportcard.com/badge/github.com/shadowy-pycoder/go-http-proxy-to-socks)](https://goreportcard.com/report/github.com/shadowy-pycoder/go-http-proxy-to-socks)
 ![GitHub Release](https://img.shields.io/github/v/release/shadowy-pycoder/go-http-proxy-to-socks)
 ![GitHub Downloads (all assets, all releases)](https://img.shields.io/github/downloads/shadowy-pycoder/go-http-proxy-to-socks/total)
+![GitHub Downloads (all assets, latest release)](https://img.shields.io/github/downloads/shadowy-pycoder/go-http-proxy-to-socks/latest/total)
 
 <p align="center"><img alt="MrGopher" src="resources/mr_gopher_small.png"/>
 
@@ -20,8 +21,8 @@
 - [Transparent proxy](#transparent-proxy)
   - [redirect (via NAT and SO_ORIGINAL_DST)](#redirect-via-nat-and-so_original_dst)
   - [tproxy (via MANGLE and IP_TRANSPARENT)](#tproxy-via-mangle-and-ip_transparent)
-  - [UDP support](#udp-support)
   - [ARP spoofing](#arp-spoofing)
+  - [UDP support](#udp-support)
 - [Traffic sniffing](#traffic-sniffing)
   - [JSON format](#json-format)
   - [Colored format](#colored-format)
@@ -385,6 +386,8 @@ iptables -t nat -X GOHPTS
 
 ### Auto configuration for `redirect` mode
 
+[[Back]](#table-of-contents)
+
 To configure your system automatically, run the following command:
 
 ```shell
@@ -456,6 +459,8 @@ ip link del veth1
 
 ### Auto configuration for `tproxy` mode
 
+[[Back]](#table-of-contents)
+
 To configure your system automatically, run the following command (for example, on a separate VM):
 
 ```shell
@@ -494,6 +499,8 @@ fi
 
 ### ARP spoofing
 
+[[Back]](#table-of-contents)
+
 `GoHPTS` has in-built ARP spoofer that can be used to make all TCP talking devices of your LAN to use proxy server to connect to the Internet.
 This is achieved by adding `-arpspoof` flag with couple of parameters, separated by semicolon.
 
@@ -528,6 +535,8 @@ Check proxy logs for traffic from other devices from your LAN
 
 ### UDP support
 
+[[Back]](#table-of-contents)
+
 `GoHPTS` has UDP support that can be enabled in `tproxy` mode. For this setup to work you need to connect to a socks5 server capable of serving UDP connections (`UDP ASSOCIATE`). For example, you can use [https://github.com/wzshiming/socks5](https://github.com/wzshiming/socks5) to deploy UDP capable socks5 server on some remote or local machine. Once you have the server to connect to, run the following command:
 
 ```shell
@@ -548,7 +557,7 @@ To test it locally, you can combine UDP transparent proxy with `-arpspoof` flag.
 sudo ./gohpts -s <socks5 server> -T 8888 -Tu :8989 -M tproxy -sniff -body -auto -mark 100 -d -arpspoof "targets <your host>;fullduplex true;debug false"
 ```
 
-4. Check connection on your host machine, the traffic should go through Kali machine.
+5. Check connection on your host machine, the traffic should go through Kali machine.
 
 ## Traffic sniffing
 
@@ -690,6 +699,8 @@ gohpts -sniff -snifflog ~/sniff.log -j
 
 ### Colored format
 
+[[Back]](#table-of-contents)
+
 ![GoHPTS - Colors example](resources/sniffing_color.png)
 
 You can see the example of colored output in the picture above. In this mode, `GoHPTS` tries to highlight import information such as TLS Handshake, HTTP metadata, something that looks line login/passwords or different types of auth and secret tokens. The output is limited comparing to JSON but way easier to read for humans.
@@ -723,6 +734,16 @@ Learn more about transparent proxies by visiting the following links:
 - [Simple tproxy example](https://github.com/FarFetchd/simple_tproxy_example)
 - [Golang TProxy](https://github.com/KatelynHaworth/go-tproxy)
 - [Transparent Proxy Implementation using eBPF and Go](https://medium.com/all-things-ebpf/building-a-transparent-proxy-with-ebpf-50a012237e76)
+- [https://github.com/heiher/hev-socks5-tproxy](https://github.com/heiher/hev-socks5-tproxy)
+
+  `socks5` proxy with `UDP ASSOCIATE` support:
+
+- [https://github.com/wzshiming/socks5](https://github.com/wzshiming/socks5)
+- [https://github.com/things-go/go-socks5](https://github.com/things-go/go-socks5)
+- [https://github.com/0990/socks5](https://github.com/0990/socks5)
+- [https://github.com/dizda/fast-socks5](https://github.com/dizda/fast-socks5)
+- [https://github.com/semigodking/redsocks](https://github.com/semigodking/redsocks)
+- [https://github.com/ginuerzh/gost](https://github.com/ginuerzh/gost)
 
 ## Contributing
 
