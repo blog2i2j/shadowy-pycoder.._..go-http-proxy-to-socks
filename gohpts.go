@@ -52,6 +52,7 @@ const (
 var (
 	supportedChainTypes  = []string{"strict", "dynamic", "random", "round_robin"}
 	SupportedTProxyModes = []string{"redirect", "tproxy"}
+	SupportedTProxyOS    = []string{"linux", "android"}
 	errInvalidWrite      = errors.New("invalid write result")
 )
 
@@ -258,16 +259,16 @@ func New(conf *Config) *proxyapp {
 	sl := snifflogger.Level(lvl)
 	p.logger = &l
 	p.snifflogger = &sl
-	if runtime.GOOS == "linux" && conf.TProxy != "" && conf.TProxyOnly != "" {
+	if slices.Contains(SupportedTProxyOS, runtime.GOOS) && conf.TProxy != "" && conf.TProxyOnly != "" {
 		p.logger.Fatal().Msg("Cannot specify TPRoxy and TProxyOnly at the same time")
-	} else if runtime.GOOS == "linux" && conf.TProxyMode != "" && !slices.Contains(SupportedTProxyModes, conf.TProxyMode) {
+	} else if slices.Contains(SupportedTProxyOS, runtime.GOOS) && conf.TProxyMode != "" && !slices.Contains(SupportedTProxyModes, conf.TProxyMode) {
 		p.logger.Fatal().Msg("Incorrect TProxyMode provided")
-	} else if runtime.GOOS != "linux" && (conf.TProxy != "" || conf.TProxyOnly != "" || conf.TProxyMode != "" || conf.TProxyUDP != "") {
+	} else if !slices.Contains(SupportedTProxyOS, runtime.GOOS) && (conf.TProxy != "" || conf.TProxyOnly != "" || conf.TProxyMode != "" || conf.TProxyUDP != "") {
 		conf.TProxy = ""
 		conf.TProxyOnly = ""
 		conf.TProxyMode = ""
 		conf.TProxyUDP = ""
-		p.logger.Warn().Msgf("[%s] functionality only available on linux systems", conf.TProxyMode)
+		p.logger.Warn().Msgf("[%s] functionality only available on linux or android systems", conf.TProxyMode)
 	}
 	p.tproxyMode = conf.TProxyMode
 	tproxyonly := conf.TProxyOnly != ""
@@ -301,12 +302,12 @@ func New(conf *Config) *proxyapp {
 		p.logger.Fatal().Msgf("%s: address already in use", p.tproxyAddrUDP)
 	}
 	p.auto = conf.Auto
-	if p.auto && runtime.GOOS != "linux" {
-		p.logger.Fatal().Msg("Auto setup is available only on linux systems")
+	if p.auto && !slices.Contains(SupportedTProxyOS, runtime.GOOS) {
+		p.logger.Fatal().Msg("Auto setup is available only on linux/android systems")
 	}
 	p.mark = conf.Mark
-	if p.mark > 0 && runtime.GOOS != "linux" {
-		p.logger.Fatal().Msg("SO_MARK is available only on linux systems")
+	if p.mark > 0 && !slices.Contains(SupportedTProxyOS, runtime.GOOS) {
+		p.logger.Fatal().Msg("SO_MARK is available only on linux/android systems")
 	}
 	if p.mark > 0xFFFFFFFF {
 		p.logger.Fatal().Msg("SO_MARK is out of range")
@@ -469,8 +470,8 @@ func New(conf *Config) *proxyapp {
 		}
 	}
 	if conf.ARPSpoof != "" {
-		if runtime.GOOS != "linux" {
-			p.logger.Fatal().Msg("ARP spoof setup is available only on linux systems")
+		if !slices.Contains(SupportedTProxyOS, runtime.GOOS) {
+			p.logger.Fatal().Msg("ARP spoof setup is available only on linux/android systems")
 		}
 		if !p.auto {
 			p.logger.Warn().Msg("ARP spoof setup requires iptables configuration")
@@ -1508,7 +1509,10 @@ func (p *proxyapp) applyCommonRedirectRules(opts map[string]string) {
 	} else {
 		iface, err = network.GetDefaultInterface()
 		if err != nil {
-			p.logger.Fatal().Err(err).Msg("failed getting default network interface")
+			iface, err = network.GetDefaultInterfaceFromRoute()
+			if err != nil {
+				p.logger.Fatal().Err(err).Msg("failed getting default network interface")
+			}
 		}
 	}
 	cmdForwardFilter := exec.Command("bash", "-c", fmt.Sprintf(`

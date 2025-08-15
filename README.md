@@ -23,6 +23,7 @@
   - [tproxy (via MANGLE and IP_TRANSPARENT)](#tproxy-via-mangle-and-ip_transparent)
   - [ARP spoofing](#arp-spoofing)
   - [UDP support](#udp-support)
+  - [Android support](#android-support)
 - [Traffic sniffing](#traffic-sniffing)
   - [JSON format](#json-format)
   - [Colored format](#colored-format)
@@ -106,7 +107,7 @@ You can download the binary for your platform from [Releases](https://github.com
 Example:
 
 ```shell
-GOHPTS_RELEASE=v1.10.1; wget -v https://github.com/shadowy-pycoder/go-http-proxy-to-socks/releases/download/$GOHPTS_RELEASE/gohpts-$GOHPTS_RELEASE-linux-amd64.tar.gz -O gohpts && tar xvzf gohpts && mv -f gohpts-$GOHPTS_RELEASE-linux-amd64 gohpts && ./gohpts -h
+GOHPTS_RELEASE=v1.10.2; wget -v https://github.com/shadowy-pycoder/go-http-proxy-to-socks/releases/download/$GOHPTS_RELEASE/gohpts-$GOHPTS_RELEASE-linux-amd64.tar.gz -O gohpts && tar xvzf gohpts && mv -f gohpts-$GOHPTS_RELEASE-linux-amd64 gohpts && ./gohpts -h
 ```
 
 Alternatively, you can install it using `go install` command (requires Go [1.24](https://go.dev/doc/install) or later):
@@ -308,7 +309,7 @@ To learn more about proxy chains visit [Proxychains Github](https://github.com/r
 >
 > -- _From [Wiki](https://en.wikipedia.org/wiki/Proxy_server)_
 
-This functionality available only on Linux systems and requires additional setup (`iptables`, ip route, etc)
+This functionality available only on Linux systems and Android (arm64) and requires additional setup (`iptables`, ip route, etc)
 
 `-T address` flag specifies the address of transparent proxy server (`GoHPTS` will be running without HTTP server).
 
@@ -559,6 +560,19 @@ sudo ./gohpts -s <socks5 server> -T 8888 -Tu :8989 -M tproxy -sniff -body -auto 
 ```
 
 5. Check connection on your host machine, the traffic should go through Kali machine.
+
+### Android support
+
+Transparent proxy can be enabled on Android devices (arm64) with root access. You can install [Termux](https://github.com/termux/termux-app) and run `GoHPTS` as a CLI tool there:
+
+```shell
+# you need to root your device first
+pkg install tsu iproute2
+# Android support added in v1.10.2
+GOHPTS_RELEASE=v1.10.2; wget -v https://github.com/shadowy-pycoder/go-http-proxy-to-socks/releases/download/$GOHPTS_RELEASE/gohpts-$GOHPTS_RELEASE-android-arm64.tar.gz -O gohpts && tar xvzf gohpts && mv -f gohpts-$GOHPTS_RELEASE-android-arm64 gohpts && ./gohpts -h
+# use your phone as router for LAN devices redirecting their traffic to remote socks5 server
+sudo ./gohpts -s remote -t 8888 -Tu :8989 -M tproxy -sniff -body -auto -mark 100 -d -arpspoof "fullduplex true;debug false"
+```
 
 ## Traffic sniffing
 

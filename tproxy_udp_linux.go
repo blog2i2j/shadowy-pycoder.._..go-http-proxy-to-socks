@@ -1,5 +1,5 @@
-//go:build linux
-// +build linux
+//go:build linux || (android && arm)
+// +build linux android,arm
 
 package gohpts
 
@@ -181,14 +181,14 @@ func newTproxyServerUDP(p *proxyapp) *tproxyServerUDP {
 	} else {
 		tsu.iface, err = network.GetDefaultInterface()
 		if err != nil {
-			tsu.p.logger.Fatal().Err(err).Msgf("[udp %s] Failed getting default interface", tsu.p.tproxyMode)
+			tsu.iface, err = network.GetDefaultInterfaceFromRoute()
+			if err != nil {
+				tsu.p.logger.Fatal().Err(err).Msgf("[udp %s] Failed getting default interface", tsu.p.tproxyMode)
+			}
 		}
 	}
 	if tsu.p.arpspoofer != nil {
-		gw, err := network.GetGatewayIPv4FromInterface(tsu.iface.Name)
-		if err != nil {
-			tsu.p.logger.Fatal().Err(err).Msgf("[udp %s] failed getting gateway from %s", tsu.p.tproxyMode, tsu.iface.Name)
-		}
+		gw := tsu.p.arpspoofer.GatewayIP()
 		tsu.gwDNS = &net.UDPAddr{IP: net.ParseIP(gw.String()), Port: 53}
 		lc = net.ListenConfig{
 			Control: func(network, address string, conn syscall.RawConn) error {

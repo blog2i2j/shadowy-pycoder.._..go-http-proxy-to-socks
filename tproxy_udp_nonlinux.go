@@ -1,5 +1,6 @@
-//go:build !linux
+//go:build !linux && !(android && arm)
 // +build !linux
+// +build !android !arm
 
 package gohpts
 
