@@ -16,7 +16,6 @@ const (
 	app       string = "gohpts"
 	addrSOCKS string = "127.0.0.1:1080"
 	addrHTTP  string = "127.0.0.1:8080"
-	tproxyOS  string = "linux"
 )
 
 const usagePrefix string = `    _____       _    _ _____ _______ _____
@@ -105,7 +104,7 @@ func root(args []string) error {
 		return nil
 	})
 	daemon := flags.Bool("D", false, "Run as a daemon (provide -logfile to see logs)")
-	if runtime.GOOS == tproxyOS {
+	if slices.Contains(gohpts.SupportedTProxyOS, runtime.GOOS) {
 		flags.StringVar(&conf.TProxy, "t", "", "Address of transparent proxy server (it starts along with HTTP proxy server)")
 		flags.StringVar(&conf.TProxyOnly, "T", "", "Address of transparent proxy server (no HTTP)")
 		flags.StringVar(&conf.TProxyUDP, "Tu", "", "Address of transparent UDP proxy server")
@@ -152,7 +151,7 @@ func root(args []string) error {
 
 	flags.Usage = func() {
 		fmt.Print(usagePrefix)
-		if runtime.GOOS == tproxyOS {
+		if slices.Contains(gohpts.SupportedTProxyOS, runtime.GOOS) {
 			fmt.Print(usageTproxy)
 		}
 	}
