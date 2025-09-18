@@ -150,20 +150,20 @@ func splitHostPort(address string) (string, int, error) {
 	return host, portnum, nil
 }
 
-type Auth struct {
+type auth struct {
 	User, Password string
 }
 
-type ContextDialer interface {
+type contextDialer interface {
 	DialContext(ctx context.Context, network, address string) (net.Conn, error)
 }
 
 var (
-	_ ContextDialer = &socks5.Dialer{}
-	_ ContextDialer = &net.Dialer{}
+	_ contextDialer = &socks5.Dialer{}
+	_ contextDialer = &net.Dialer{}
 )
 
-func newSOCKS5Dialer(address string, auth *Auth, forward ContextDialer) (*socks5.Dialer, error) {
+func newSOCKS5Dialer(address string, auth *auth, forward contextDialer) (*socks5.Dialer, error) {
 	d := &socks5.Dialer{
 		ProxyNetwork: "tcp",
 		IsResolve:    false,

@@ -417,7 +417,7 @@ func New(conf *Config) *proxyapp {
 		if err != nil {
 			p.logger.Fatal().Err(err).Msg("")
 		}
-		auth := Auth{
+		auth := auth{
 			User:     conf.User,
 			Password: conf.Pass,
 		}
@@ -952,7 +952,7 @@ func (p *proxyapp) updateSocksList() {
 	chainType := p.proxychain.Type
 	ctl := colorizeChainType(chainType, p.nocolor)
 	for _, pr := range p.proxylist {
-		auth := Auth{
+		auth := auth{
 			User:     pr.Username,
 			Password: pr.Password,
 		}
@@ -986,7 +986,7 @@ func (p *proxyapp) updateSocksList() {
 	}
 	currentDialer := dialer
 	for _, pr := range p.proxylist[failed+1:] {
-		auth := Auth{
+		auth := auth{
 			User:     pr.Username,
 			Password: pr.Password,
 		}
@@ -1083,7 +1083,7 @@ func (p *proxyapp) getSocks() (*socks5.Dialer, *http.Client, error) {
 	var dialer *socks5.Dialer
 	var err error
 	for i, pr := range copyProxyList {
-		auth := Auth{
+		auth := auth{
 			User:     pr.Username,
 			Password: pr.Password,
 		}
