@@ -31,7 +31,7 @@ import (
 
 	"github.com/goccy/go-yaml"
 	"github.com/rs/zerolog"
-	"github.com/shadowy-pycoder/mshark/arpspoof"
+	"github.com/shadowy-pycoder/arpspoof"
 	"github.com/shadowy-pycoder/mshark/layers"
 	"github.com/shadowy-pycoder/mshark/network"
 	"github.com/wzshiming/socks5"

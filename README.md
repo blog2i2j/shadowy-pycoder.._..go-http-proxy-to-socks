@@ -107,7 +107,7 @@ You can download the binary for your platform from [Releases](https://github.com
 Example:
 
 ```shell
-GOHPTS_RELEASE=v1.10.4; wget -v https://github.com/shadowy-pycoder/go-http-proxy-to-socks/releases/download/$GOHPTS_RELEASE/gohpts-$GOHPTS_RELEASE-linux-amd64.tar.gz -O gohpts && tar xvzf gohpts && mv -f gohpts-$GOHPTS_RELEASE-linux-amd64 gohpts && ./gohpts -h
+GOHPTS_RELEASE=v1.10.5; wget -v https://github.com/shadowy-pycoder/go-http-proxy-to-socks/releases/download/$GOHPTS_RELEASE/gohpts-$GOHPTS_RELEASE-linux-amd64.tar.gz -O gohpts && tar xvzf gohpts && mv -f gohpts-$GOHPTS_RELEASE-linux-amd64 gohpts && ./gohpts -h
 ```
 
 Alternatively, you can install it using `go install` command (requires Go [1.24](https://go.dev/doc/install) or later):
