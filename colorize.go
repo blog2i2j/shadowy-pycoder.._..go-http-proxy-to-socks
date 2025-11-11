@@ -30,7 +30,10 @@ var (
 	credsPattern = regexp.MustCompile(
 		`(?i)(?:"|')?(username|user|login|email|password|pass|pwd)(?:"|')?\s*[:=]\s*(?:"|')?([^\s"'&]+)`,
 	)
-	macPattern = regexp.MustCompile(`(?i)([a-z0-9_]+_[0-9a-f]{2}(?::[0-9a-f]{2}){2}|(?:[0-9a-f]{2}[:-]){5}[0-9a-f]{2})`)
+	macPattern   = regexp.MustCompile(`(?i)([a-z0-9_]+_[0-9a-f]{2}(?::[0-9a-f]{2}){2}|(?:[0-9a-f]{2}[:-]){5}[0-9a-f]{2})`)
+	portsPattern = regexp.MustCompile(
+		`^\s*(?:6553[0-5]|655[0-2]\d|65[0-4]\d{2}|6[0-4]\d{3}|[1-5]\d{0,4}|[1-9]\d{0,3})\s*(?:,\s*(?:6553[0-5]|655[0-2]\d|65[0-4]\d{2}|6[0-4]\d{3}|[1-5]\d{0,4}|[1-9]\d{0,3})\s*)*$`,
+	)
 )
 
 var rColors = []func(string) *colors.Color{

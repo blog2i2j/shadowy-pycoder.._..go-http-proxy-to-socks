@@ -693,6 +693,18 @@ func (tsu *tproxyServerUDP) ApplyRedirectRules(opts map[string]string) {
 		if err := cmdInit0.Run(); err != nil {
 			tsu.p.logger.Fatal().Err(err).Msgf("[udp %s] Failed while configuring iptables. Are you root?", tsu.p.tproxyMode)
 		}
+		if tsu.p.ignoredPorts != "" {
+			cmdInit1 := exec.Command("bash", "-c", fmt.Sprintf(`
+			%s
+		    iptables -t mangle -A GOHPTS_UDP -p udp -m multiport --dports %s -j RETURN
+		    iptables -t mangle -A GOHPTS_UDP -p udp -m multiport --sports %s -j RETURN
+			`, setex, tsu.p.ignoredPorts, tsu.p.ignoredPorts))
+			cmdInit1.Stdout = os.Stdout
+			cmdInit1.Stderr = os.Stderr
+			if err := cmdInit1.Run(); err != nil {
+				tsu.p.logger.Fatal().Err(err).Msgf("[tcp %s] Failed while configuring iptables. Are you root?", tsu.p.tproxyMode)
+			}
+		}
 		cmdDocker := exec.Command("bash", "-c", fmt.Sprintf(`
         %s
         if command -v docker >/dev/null 2>&1

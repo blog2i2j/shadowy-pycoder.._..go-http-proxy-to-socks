@@ -276,6 +276,18 @@ func (ts *tproxyServer) ApplyRedirectRules(opts map[string]string) {
 		if err := cmdInit.Run(); err != nil {
 			ts.p.logger.Fatal().Err(err).Msgf("[tcp %s] Failed while configuring iptables. Are you root?", ts.p.tproxyMode)
 		}
+		if ts.p.ignoredPorts != "" {
+			cmdInit1 := exec.Command("bash", "-c", fmt.Sprintf(`
+			%s
+		    iptables -t nat -A GOHPTS -p tcp -m multiport --dports %s -j RETURN
+		    iptables -t nat -A GOHPTS -p tcp -m multiport --sports %s -j RETURN
+			`, setex, ts.p.ignoredPorts, ts.p.ignoredPorts))
+			cmdInit1.Stdout = os.Stdout
+			cmdInit1.Stderr = os.Stderr
+			if err := cmdInit1.Run(); err != nil {
+				ts.p.logger.Fatal().Err(err).Msgf("[tcp %s] Failed while configuring iptables. Are you root?", ts.p.tproxyMode)
+			}
+		}
 		if ts.p.httpServerAddr != "" {
 			_, httpPort, _ := net.SplitHostPort(ts.p.httpServerAddr)
 			cmdHTTP := exec.Command("bash", "-c", fmt.Sprintf(`
@@ -374,6 +386,18 @@ func (ts *tproxyServer) ApplyRedirectRules(opts map[string]string) {
 		cmdInit0.Stderr = os.Stderr
 		if err := cmdInit0.Run(); err != nil {
 			ts.p.logger.Fatal().Err(err).Msgf("[tcp %s] Failed while configuring iptables. Are you root?", ts.p.tproxyMode)
+		}
+		if ts.p.ignoredPorts != "" {
+			cmdInit1 := exec.Command("bash", "-c", fmt.Sprintf(`
+			%s
+		    iptables -t mangle -A GOHPTS -p tcp -m multiport --dports %s -j RETURN
+		    iptables -t mangle -A GOHPTS -p tcp -m multiport --sports %s -j RETURN
+			`, setex, ts.p.ignoredPorts, ts.p.ignoredPorts))
+			cmdInit1.Stdout = os.Stdout
+			cmdInit1.Stderr = os.Stderr
+			if err := cmdInit1.Run(); err != nil {
+				ts.p.logger.Fatal().Err(err).Msgf("[tcp %s] Failed while configuring iptables. Are you root?", ts.p.tproxyMode)
+			}
 		}
 		cmdDocker := exec.Command("bash", "-c", fmt.Sprintf(`
         %s

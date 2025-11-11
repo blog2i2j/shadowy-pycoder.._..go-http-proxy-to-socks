@@ -67,6 +67,7 @@ const usageTproxy string = `
   -auto     Automatically setup iptables for transparent proxy (requires elevated privileges)
   -arpspoof Enable ARP spoof proxy for selected targets (Example: "targets 10.0.0.1,10.0.0.5-10,192.168.1.*,192.168.10.0/24;fullduplex false;debug true")
   -mark     Set mark for each packet sent through transparent proxy (Default: redirect 0, tproxy 100)
+  -P        Comma separated list of ports to ignore when proxying traffic (Example: "22,80,443,9092")
 `
 
 func root(args []string) error {
@@ -134,6 +135,12 @@ func root(args []string) error {
 			"",
 			"Enable ARP spoof proxy for selected targets",
 		)
+		flags.StringVar(
+			&conf.IgnoredPorts,
+			"P",
+			"",
+			`Comma separated list of ports to ignore when proxying traffic (Example: "22,80,443,9092")`,
+		)
 	}
 	flags.StringVar(&conf.LogFilePath, "logfile", "", "Log file path (Default: stdout)")
 	flags.BoolVar(&conf.Debug, "d", false, "Show logs in DEBUG mode")
@@ -200,6 +207,11 @@ func root(args []string) error {
 	if seen["mark"] {
 		if !seen["t"] && !seen["T"] && !seen["Tu"] {
 			return fmt.Errorf("-mark requires -t, -T or -Tu flag")
+		}
+	}
+	if seen["P"] {
+		if !seen["auto"] {
+			return fmt.Errorf("-P requires -auto flag")
 		}
 	}
 	if seen["f"] {

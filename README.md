@@ -107,7 +107,7 @@ You can download the binary for your platform from [Releases](https://github.com
 Example:
 
 ```shell
-GOHPTS_RELEASE=v1.10.5; wget -v https://github.com/shadowy-pycoder/go-http-proxy-to-socks/releases/download/$GOHPTS_RELEASE/gohpts-$GOHPTS_RELEASE-linux-amd64.tar.gz -O gohpts && tar xvzf gohpts && mv -f gohpts-$GOHPTS_RELEASE-linux-amd64 gohpts && ./gohpts -h
+GOHPTS_RELEASE=v1.10.6; wget -v https://github.com/shadowy-pycoder/go-http-proxy-to-socks/releases/download/$GOHPTS_RELEASE/gohpts-$GOHPTS_RELEASE-linux-amd64.tar.gz -O gohpts && tar xvzf gohpts && mv -f gohpts-$GOHPTS_RELEASE-linux-amd64 gohpts && ./gohpts -h
 ```
 
 Alternatively, you can install it using `go install` command (requires Go [1.24](https://go.dev/doc/install) or later):
@@ -180,6 +180,7 @@ Options:
   -auto     Automatically setup iptables for transparent proxy (requires elevated privileges)
   -arpspoof Enable ARP spoof proxy for selected targets (Example: "targets 10.0.0.1,10.0.0.5-10,192.168.1.*,192.168.10.0/24;fullduplex false;debug true")
   -mark     Set mark for each packet sent through transparent proxy (Default: redirect 0, tproxy 100)
+  -P        Comma separated list of ports to ignore when proxying traffic (Example: "22,80,443,9092")
 ```
 
 ### Configuration via CLI flags

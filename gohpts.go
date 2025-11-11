@@ -75,6 +75,7 @@ type Config struct {
 	Auto           bool
 	Mark           uint
 	ARPSpoof       string
+	IgnoredPorts   string
 	LogFilePath    string
 	Debug          bool
 	JSON           bool
@@ -147,6 +148,7 @@ type proxyapp struct {
 	auto           bool
 	mark           uint
 	arpspoofer     *arpspoof.ARPSpoofer
+	ignoredPorts   string
 	user           string
 	pass           string
 	proxychain     chain
@@ -314,6 +316,15 @@ func New(conf *Config) *proxyapp {
 	}
 	if p.mark == 0 && p.tproxyMode == "tproxy" {
 		p.mark = 100
+	}
+	if conf.IgnoredPorts != "" {
+		if !p.auto {
+			p.logger.Fatal().Msg("Ignoring ports is only possible in auto configuration")
+		}
+		if !portsPattern.MatchString(conf.IgnoredPorts) {
+			p.logger.Fatal().Msg("Ignored ports must be a comma separated list of port numbers")
+		}
+		p.ignoredPorts = conf.IgnoredPorts
 	}
 	var addrHTTP, addrSOCKS, certFile, keyFile string
 	if conf.ServerConfPath != "" {
