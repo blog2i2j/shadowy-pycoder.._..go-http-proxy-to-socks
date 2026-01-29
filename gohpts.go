@@ -938,11 +938,11 @@ func (p *proxyapp) printProxyChain(pc []proxyEntry) string {
 		if p.tproxyAddr != "" {
 			sb.WriteString(" | ")
 			sb.WriteString(p.tproxyAddr)
-			sb.WriteString(fmt.Sprintf(" (%s)", p.tproxyMode))
+			fmt.Fprintf(&sb, " (%s)", p.tproxyMode)
 		}
 	} else if p.tproxyAddr != "" {
 		sb.WriteString(p.tproxyAddr)
-		sb.WriteString(fmt.Sprintf(" (%s)", p.tproxyMode))
+		fmt.Fprintf(&sb, " (%s)", p.tproxyMode)
 	}
 	sb.WriteString(" →  ")
 	for _, pe := range pc {
@@ -1502,6 +1502,13 @@ func (p *proxyapp) applyCommonRedirectRules(opts map[string]string) {
 	}
 
 	_ = createSysctlOptCmd("net.ipv4.ip_forward", "1", setex, opts, p.debug).Run()
+	_ = createSysctlOptCmd("net.core.rmem_default", "4194304", setex, opts, p.debug).Run()
+	_ = createSysctlOptCmd("net.core.wmem_default", "4194304", setex, opts, p.debug).Run()
+	_ = createSysctlOptCmd("net.core.rmem_max", "4194304", setex, opts, p.debug).Run()
+	_ = createSysctlOptCmd("net.core.wmem_max", "4194304", setex, opts, p.debug).Run()
+	_ = createSysctlOptCmd("net.core.netdev_budget", "600", setex, opts, p.debug).Run()
+	_ = createSysctlOptCmd("net.core.netdev_budget_usecs", "8000", setex, opts, p.debug).Run()
+	_ = createSysctlOptCmd("net.core.netdev_max_backlog", "250000", setex, opts, p.debug).Run()
 	cmdClearForward := exec.Command("bash", "-c", fmt.Sprintf(`
 	%s
 	iptables -t filter -F GOHPTS 2>/dev/null || true
@@ -1559,7 +1566,7 @@ func (p *proxyapp) clearCommonRedirectRules(opts map[string]string) error {
 	}
 	cmds := make([]string, 0, len(opts))
 	for _, cmd := range slices.Sorted(maps.Keys(opts)) {
-		cmds = append(cmds, fmt.Sprintf("sysctl -w %s=%s", cmd, opts[cmd]))
+		cmds = append(cmds, fmt.Sprintf("sysctl -w %s=%q", cmd, opts[cmd]))
 	}
 	cmdRestoreOpts := exec.Command("bash", "-c", fmt.Sprintf(`
         %s

@@ -192,11 +192,10 @@ func createSysctlOptCmd(opt, value, setex string, opts map[string]string, debug 
     cat /proc/sys/%s
     `, strings.ReplaceAll(opt, ".", "/")))
 	output, _ := cmdCat.CombinedOutput()
-	opts[opt] = string(output)
+	opts[opt] = strings.ReplaceAll(strings.TrimRight(string(output), "\n"), "\t", " ")
 	cmd := exec.Command("bash", "-c", fmt.Sprintf(`
     %s
-    sysctl -w %s=%s
-    `, setex, opt, value))
+    sysctl -w %s=%q`, setex, opt, value))
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if !debug {

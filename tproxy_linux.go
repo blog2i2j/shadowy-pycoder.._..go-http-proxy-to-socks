@@ -39,9 +39,12 @@ func newTproxyServer(p *proxyapp) *tproxyServer {
 	lc := net.ListenConfig{
 		Control: func(network, address string, conn syscall.RawConn) error {
 			var operr error
+			size := 2 * 1024 * 1024
 			if err := conn.Control(func(fd uintptr) {
 				operr = unix.SetsockoptInt(int(fd), unix.IPPROTO_TCP, unix.TCP_USER_TIMEOUT, int(timeout.Milliseconds()))
 				operr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_REUSEADDR, 1)
+				operr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_SNDBUF, size)
+				operr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_RCVBUF, size)
 				if ts.p.tproxyMode == "tproxy" {
 					operr = unix.SetsockoptInt(int(fd), unix.SOL_IP, unix.IP_TRANSPARENT, 1)
 				}
@@ -442,6 +445,8 @@ func (ts *tproxyServer) ApplyRedirectRules(opts map[string]string) {
 	_ = createSysctlOptCmd("net.core.default_qdisc", "fq", setex, opts, ts.p.debug).Run()
 	_ = createSysctlOptCmd("net.ipv4.tcp_tw_reuse", "1", setex, opts, ts.p.debug).Run()
 	_ = createSysctlOptCmd("net.ipv4.tcp_fin_timeout", "15", setex, opts, ts.p.debug).Run()
+	_ = createSysctlOptCmd("net.ipv4.tcp_rmem", "4096 65536 4194304", setex, opts, ts.p.debug).Run()
+	_ = createSysctlOptCmd("net.ipv4.tcp_wmem", "4096 65536 4194304", setex, opts, ts.p.debug).Run()
 }
 
 func (ts *tproxyServer) ClearRedirectRules() error {

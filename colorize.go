@@ -113,38 +113,38 @@ func colorizeHTTP(
 ) string {
 	var sb strings.Builder
 	if ts {
-		sb.WriteString(fmt.Sprintf("%s ", colorizeTimestamp(time.Now(), nocolor)))
+		fmt.Fprintf(&sb, "%s ", colorizeTimestamp(time.Now(), nocolor))
 	}
 	if nocolor {
 		sb.WriteString(id)
-		sb.WriteString(fmt.Sprintf(" %s %s %s ", req.Method, req.URL, req.Proto))
+		fmt.Fprintf(&sb, " %s %s %s ", req.Method, req.URL, req.Proto)
 		if req.UserAgent() != "" {
 			sb.WriteString(colors.WrapBrackets(req.UserAgent()))
 		}
 		if req.ContentLength > 0 {
-			sb.WriteString(fmt.Sprintf(" Len: %d", req.ContentLength))
+			fmt.Fprintf(&sb, " Len: %d", req.ContentLength)
 		}
 		sb.WriteString(" →  ")
-		sb.WriteString(fmt.Sprintf("%s %s ", resp.Proto, resp.Status))
+		fmt.Fprintf(&sb, "%s %s ", resp.Proto, resp.Status)
 		if resp.ContentLength > 0 {
-			sb.WriteString(fmt.Sprintf("Len: %d", resp.ContentLength))
+			fmt.Fprintf(&sb, "Len: %d", resp.ContentLength)
 		}
 		if body && len(*reqBodySaved) > 0 {
 			b := colorizeBody(reqBodySaved, nocolor)
 			if b != "" {
 				sb.WriteString("\n")
-				sb.WriteString(fmt.Sprintf("%s ", colorizeTimestamp(time.Now(), nocolor)))
+				fmt.Fprintf(&sb, "%s ", colorizeTimestamp(time.Now(), nocolor))
 				sb.WriteString(id)
-				sb.WriteString(fmt.Sprintf(" req_body: %s", b))
+				fmt.Fprintf(&sb, " req_body: %s", b)
 			}
 		}
 		if body && len(*respBodySaved) > 0 {
 			b := colorizeBody(respBodySaved, nocolor)
 			if b != "" {
 				sb.WriteString("\n")
-				sb.WriteString(fmt.Sprintf("%s ", colorizeTimestamp(time.Now(), nocolor)))
+				fmt.Fprintf(&sb, "%s ", colorizeTimestamp(time.Now(), nocolor))
 				sb.WriteString(id)
-				sb.WriteString(fmt.Sprintf(" resp_body: %s", b))
+				fmt.Fprintf(&sb, " resp_body: %s", b)
 			}
 		}
 	} else {
@@ -168,7 +168,7 @@ func colorizeHTTP(
 			b := colorizeBody(reqBodySaved, nocolor)
 			if b != "" {
 				sb.WriteString("\n")
-				sb.WriteString(fmt.Sprintf("%s ", colorizeTimestamp(time.Now(), nocolor)))
+				fmt.Fprintf(&sb, "%s ", colorizeTimestamp(time.Now(), nocolor))
 				sb.WriteString(id)
 				sb.WriteString(colors.RedBgDark(" req_body: ").String())
 				sb.WriteString(b)
@@ -178,7 +178,7 @@ func colorizeHTTP(
 			b := colorizeBody(respBodySaved, nocolor)
 			if b != "" {
 				sb.WriteString("\n")
-				sb.WriteString(fmt.Sprintf("%s ", colorizeTimestamp(time.Now(), nocolor)))
+				fmt.Fprintf(&sb, "%s ", colorizeTimestamp(time.Now(), nocolor))
 				sb.WriteString(id)
 				sb.WriteString(colors.RedBgDark(" resp_body: ").String())
 				sb.WriteString(b)
@@ -190,41 +190,41 @@ func colorizeHTTP(
 
 func colorizeTLS(req *layers.TLSClientHello, resp *layers.TLSServerHello, id string, nocolor bool) string {
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("%s ", colorizeTimestamp(time.Now(), nocolor)))
+	fmt.Fprintf(&sb, "%s ", colorizeTimestamp(time.Now(), nocolor))
 	sb.WriteString(id)
 	if nocolor {
-		sb.WriteString(fmt.Sprintf(" %s ", req.TypeDesc))
+		fmt.Fprintf(&sb, " %s ", req.TypeDesc)
 		if req.Length > 0 {
-			sb.WriteString(fmt.Sprintf(" Len: %d", req.Length))
+			fmt.Fprintf(&sb, " Len: %d", req.Length)
 		}
 		if req.ServerName != nil && req.ServerName.SNName != "" {
-			sb.WriteString(fmt.Sprintf(" SNI: %s", req.ServerName.SNName))
+			fmt.Fprintf(&sb, " SNI: %s", req.ServerName.SNName)
 		}
 		if req.Version != nil && req.Version.Desc != "" {
-			sb.WriteString(fmt.Sprintf(" Ver: %s", req.Version.Desc))
+			fmt.Fprintf(&sb, " Ver: %s", req.Version.Desc)
 		}
 		if req.ALPN != nil {
-			sb.WriteString(fmt.Sprintf(" ALPN: %v", req.ALPN))
+			fmt.Fprintf(&sb, " ALPN: %v", req.ALPN)
 		}
 		sb.WriteString(" →  ")
 		sb.WriteString("\n")
-		sb.WriteString(fmt.Sprintf("%s ", colorizeTimestamp(time.Now(), nocolor)))
+		fmt.Fprintf(&sb, "%s ", colorizeTimestamp(time.Now(), nocolor))
 		sb.WriteString(id)
-		sb.WriteString(fmt.Sprintf(" %s ", resp.TypeDesc))
+		fmt.Fprintf(&sb, " %s ", resp.TypeDesc)
 		if resp.Length > 0 {
-			sb.WriteString(fmt.Sprintf(" Len: %d", resp.Length))
+			fmt.Fprintf(&sb, " Len: %d", resp.Length)
 		}
 		if resp.SessionID != "" {
-			sb.WriteString(fmt.Sprintf(" SID: %s", resp.SessionID))
+			fmt.Fprintf(&sb, " SID: %s", resp.SessionID)
 		}
 		if resp.CipherSuite != nil && resp.CipherSuite.Desc != "" {
-			sb.WriteString(fmt.Sprintf(" CS: %s", resp.CipherSuite.Desc))
+			fmt.Fprintf(&sb, " CS: %s", resp.CipherSuite.Desc)
 		}
 		if resp.SupportedVersion != nil && resp.SupportedVersion.Desc != "" {
-			sb.WriteString(fmt.Sprintf(" Ver: %s", resp.SupportedVersion.Desc))
+			fmt.Fprintf(&sb, " Ver: %s", resp.SupportedVersion.Desc)
 		}
 		if resp.ExtensionLength > 0 {
-			sb.WriteString(fmt.Sprintf(" ExtLen: %d", resp.ExtensionLength))
+			fmt.Fprintf(&sb, " ExtLen: %d", resp.ExtensionLength)
 		}
 	} else {
 		sb.WriteString(colors.Magenta(fmt.Sprintf(" %s ", req.TypeDesc)).Bold())
@@ -242,7 +242,7 @@ func colorizeTLS(req *layers.TLSClientHello, resp *layers.TLSServerHello, id str
 		}
 		sb.WriteString(colors.MagentaBg(" →  ").String())
 		sb.WriteString("\n")
-		sb.WriteString(fmt.Sprintf("%s ", colorizeTimestamp(time.Now(), nocolor)))
+		fmt.Fprintf(&sb, "%s ", colorizeTimestamp(time.Now(), nocolor))
 		sb.WriteString(id)
 		sb.WriteString(colors.LightBlue(fmt.Sprintf(" %s ", resp.TypeDesc)).Bold())
 		if resp.Length > 0 {
@@ -288,12 +288,12 @@ func colorizeRData(rec *layers.ResourceRecord) string {
 
 func colorizeDNS(req, resp *layers.DNSMessage, id string, nocolor bool) string {
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("%s ", colorizeTimestamp(time.Now(), nocolor)))
+	fmt.Fprintf(&sb, "%s ", colorizeTimestamp(time.Now(), nocolor))
 	sb.WriteString(id)
 	if nocolor {
-		sb.WriteString(fmt.Sprintf(" DNS %s (%s) %#04x ", req.Flags.OPCodeDesc, req.Flags.QRDesc, req.TransactionID))
+		fmt.Fprintf(&sb, " DNS %s (%s) %#04x ", req.Flags.OPCodeDesc, req.Flags.QRDesc, req.TransactionID)
 		for _, rec := range req.Questions {
-			sb.WriteString(fmt.Sprintf("%s %s ", rec.Type.Name, rec.Name))
+			fmt.Fprintf(&sb, "%s %s ", rec.Type.Name, rec.Name)
 		}
 		for _, rec := range req.AnswerRRs {
 			sb.WriteString(rec.Summary())
@@ -305,11 +305,11 @@ func colorizeDNS(req, resp *layers.DNSMessage, id string, nocolor bool) string {
 			sb.WriteString(rec.Summary())
 		}
 		sb.WriteString("\n")
-		sb.WriteString(fmt.Sprintf("%s ", colorizeTimestamp(time.Now(), nocolor)))
+		fmt.Fprintf(&sb, "%s ", colorizeTimestamp(time.Now(), nocolor))
 		sb.WriteString(id)
-		sb.WriteString(fmt.Sprintf(" DNS %s (%s) %#04x ", resp.Flags.OPCodeDesc, resp.Flags.QRDesc, resp.TransactionID))
+		fmt.Fprintf(&sb, " DNS %s (%s) %#04x ", resp.Flags.OPCodeDesc, resp.Flags.QRDesc, resp.TransactionID)
 		for _, rec := range resp.Questions {
-			sb.WriteString(fmt.Sprintf("%s %s ", rec.Type.Name, rec.Name))
+			fmt.Fprintf(&sb, "%s %s ", rec.Type.Name, rec.Name)
 		}
 		for _, rec := range resp.AnswerRRs {
 			sb.WriteString(rec.Summary())
@@ -324,7 +324,7 @@ func colorizeDNS(req, resp *layers.DNSMessage, id string, nocolor bool) string {
 		sb.WriteString(colors.Gray(fmt.Sprintf(" DNS %s (%s)", req.Flags.OPCodeDesc, req.Flags.QRDesc)).Bold())
 		sb.WriteString(colors.Beige(fmt.Sprintf(" %#04x ", req.TransactionID)).String())
 		for _, rec := range req.Questions {
-			sb.WriteString(fmt.Sprintf("%s %s ", colors.LightBlue(rec.Type.Name), colors.Gray(rec.Name)))
+			fmt.Fprintf(&sb, "%s %s ", colors.LightBlue(rec.Type.Name), colors.Gray(rec.Name))
 		}
 		for _, rec := range req.AnswerRRs {
 			sb.WriteString(colorizeRData(rec))
@@ -336,12 +336,12 @@ func colorizeDNS(req, resp *layers.DNSMessage, id string, nocolor bool) string {
 			sb.WriteString(colorizeRData(rec))
 		}
 		sb.WriteString("\n")
-		sb.WriteString(fmt.Sprintf("%s ", colorizeTimestamp(time.Now(), nocolor)))
+		fmt.Fprintf(&sb, "%s ", colorizeTimestamp(time.Now(), nocolor))
 		sb.WriteString(id)
 		sb.WriteString(colors.Blue(fmt.Sprintf(" DNS %s (%s)", resp.Flags.OPCodeDesc, resp.Flags.QRDesc)).Bold())
 		sb.WriteString(colors.Beige(fmt.Sprintf(" %#04x ", resp.TransactionID)).String())
 		for _, rec := range resp.Questions {
-			sb.WriteString(fmt.Sprintf("%s %s ", colors.LightBlue(rec.Type.Name), colors.Gray(rec.Name)))
+			fmt.Fprintf(&sb, "%s %s ", colors.LightBlue(rec.Type.Name), colors.Gray(rec.Name))
 		}
 		for _, rec := range resp.AnswerRRs {
 			sb.WriteString(colorizeRData(rec))
@@ -441,26 +441,24 @@ func colorizeConnections(srcRemote, srcLocal, dstRemote, dstLocal net.Addr, id s
 	var sb strings.Builder
 	if nocolor {
 		sb.WriteString(id)
-		sb.WriteString(
-			fmt.Sprintf(
-				" Src: %s→ %s →  Dst: %s→ %s",
-				srcRemote,
-				srcLocal,
-				dstLocal,
-				dstRemote,
-			),
+		fmt.Fprintf(&sb,
+			" Src: %s→ %s →  Dst: %s→ %s",
+			srcRemote,
+			srcLocal,
+			dstLocal,
+			dstRemote,
 		)
 		sb.WriteString("\n")
-		sb.WriteString(fmt.Sprintf("%s ", colorizeTimestamp(time.Now(), nocolor)))
+		fmt.Fprintf(&sb, "%s ", colorizeTimestamp(time.Now(), nocolor))
 		sb.WriteString(id)
-		sb.WriteString(fmt.Sprintf(" %s %s %s ", r.Method, r.Host, r.Proto))
+		fmt.Fprintf(&sb, " %s %s %s ", r.Method, r.Host, r.Proto)
 	} else {
 		sb.WriteString(id)
 		sb.WriteString(colors.Green(fmt.Sprintf(" Src: %s→ %s", srcRemote, srcLocal)).String())
 		sb.WriteString(colors.Magenta(" →  ").String())
 		sb.WriteString(colors.Blue(fmt.Sprintf("Dst: %s→ %s", dstLocal, dstRemote)).String())
 		sb.WriteString("\n")
-		sb.WriteString(fmt.Sprintf("%s ", colorizeTimestamp(time.Now(), nocolor)))
+		fmt.Fprintf(&sb, "%s ", colorizeTimestamp(time.Now(), nocolor))
 		sb.WriteString(id)
 		sb.WriteString(colors.Gray(fmt.Sprintf(" %s ", r.Method)).String())
 		sb.WriteString(colors.YellowBg(fmt.Sprintf("%s ", r.Host)).String())
@@ -478,15 +476,12 @@ func colorizeConnectionsTransparent(
 	var sb strings.Builder
 	if nocolor {
 		sb.WriteString(id)
-		sb.WriteString(
-			fmt.Sprintf(
-				" Src: %s→ %s →  Dst: %s→ %s Orig Dst: %s",
-				srcRemote,
-				srcLocal,
-				dstLocal,
-				dstRemote,
-				dst,
-			),
+		fmt.Fprintf(&sb, " Src: %s→ %s →  Dst: %s→ %s Orig Dst: %s",
+			srcRemote,
+			srcLocal,
+			dstLocal,
+			dstRemote,
+			dst,
 		)
 	} else {
 		sb.WriteString(id)
