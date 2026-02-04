@@ -1,5 +1,4 @@
 //go:build linux || (android && arm)
-// +build linux android,arm
 
 package gohpts
 
@@ -146,6 +145,7 @@ type tproxyServerUDP struct {
 	gwConn       *net.UDPConn
 	gwDNS        *net.UDPAddr
 	startingFlag atomic.Bool
+	closingFlag  atomic.Bool
 }
 
 func newTproxyServerUDP(p *proxyapp) *tproxyServerUDP {
@@ -159,6 +159,7 @@ func newTproxyServerUDP(p *proxyapp) *tproxyServerUDP {
 			size := 2 * 1024 * 1024
 			if err := conn.Control(func(fd uintptr) {
 				operr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_REUSEADDR, 1)
+				operr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_REUSEPORT, 1)
 				operr = unix.SetsockoptInt(int(fd), unix.SOL_IP, unix.IP_TRANSPARENT, 1)
 				operr = unix.SetsockoptInt(int(fd), unix.SOL_IP, unix.IP_RECVORIGDSTADDR, 1)
 				operr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_SNDBUF, size)
@@ -201,6 +202,7 @@ func newTproxyServerUDP(p *proxyapp) *tproxyServerUDP {
 					operr = unix.SetsockoptInt(int(fd), unix.SOL_IP, unix.IP_TRANSPARENT, 1)
 					operr = unix.SetsockoptInt(int(fd), unix.SOL_IP, unix.IP_FREEBIND, 1)
 					operr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_REUSEADDR, 1)
+					operr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_REUSEPORT, 1)
 					operr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_SNDBUF, size)
 					operr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_RCVBUF, size)
 				}); err != nil {
@@ -282,6 +284,9 @@ func (tsu *tproxyServerUDP) ListenAndServe() {
 				}
 				if tsu.p.sniff {
 					if next := layers.ParseNextLayer(buf[:n], conn.SrcPort(), conn.DstPort()); next != nil {
+						if tsu.closingFlag.Load() {
+							continue
+						}
 						tsu.wg.Add(1)
 						sniffheader := make([]string, 0, 3)
 						id := getID(tsu.p.nocolor)
@@ -344,6 +349,9 @@ func (tsu *tproxyServerUDP) ListenAndServe() {
 }
 
 func (tsu *tproxyServerUDP) handleConnection(conn *udpConn) {
+	if tsu.closingFlag.Load() {
+		return
+	}
 	tsu.wg.Add(1)
 	buf := make([]byte, udpBufferSize)
 	defer func() {
@@ -454,6 +462,9 @@ func newDNSConn(srcAddr, dstAddr *net.UDPAddr, mark uint) (*dnsConn, error) {
 }
 
 func (tsu *tproxyServerUDP) listenAndServeDNS() {
+	if tsu.closingFlag.Load() {
+		return
+	}
 	tsu.wg.Add(1)
 	buf := make([]byte, udpBufferSize)
 	for {
@@ -490,6 +501,9 @@ func (tsu *tproxyServerUDP) listenAndServeDNS() {
 				if tsu.p.sniff {
 					dns := &layers.DNSMessage{}
 					if err := dns.Parse(buf[:n]); err == nil {
+						if tsu.closingFlag.Load() {
+							continue
+						}
 						tsu.wg.Add(1)
 						sniffheader := make([]string, 0, 3)
 						id := getID(tsu.p.nocolor)
@@ -554,6 +568,9 @@ func (tsu *tproxyServerUDP) listenAndServeDNS() {
 }
 
 func (tsu *tproxyServerUDP) handleDNSConnection(conn *dnsConn) {
+	if tsu.closingFlag.Load() {
+		return
+	}
 	tsu.wg.Add(1)
 	defer func() {
 		srcConnStr := fmt.Sprintf("%s→ %s", conn.srcAddr, tsu.gwConn.LocalAddr())
@@ -622,6 +639,7 @@ func (tsu *tproxyServerUDP) Shutdown() {
 		time.Sleep(50 * time.Millisecond)
 	}
 	close(tsu.quit)
+	tsu.closingFlag.Store(true)
 	done := make(chan struct{})
 	go func() {
 		tsu.wg.Wait()
@@ -629,7 +647,6 @@ func (tsu *tproxyServerUDP) Shutdown() {
 	}()
 	select {
 	case <-done:
-		tsu.p.logger.Info().Msgf("[udp %s] Server gracefully shutdown", tsu.p.tproxyMode)
 		return
 	case <-time.After(shutdownTimeout):
 		tsu.p.logger.Error().Msgf("[udp %s] Server timed out waiting for connections to finish", tsu.p.tproxyMode)

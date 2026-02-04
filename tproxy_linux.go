@@ -1,5 +1,4 @@
 //go:build linux || (android && arm)
-// +build linux android,arm
 
 package gohpts
 
@@ -28,6 +27,7 @@ type tproxyServer struct {
 	wg           sync.WaitGroup
 	p            *proxyapp
 	startingFlag atomic.Bool
+	closingFlag  atomic.Bool
 }
 
 func newTproxyServer(p *proxyapp) *tproxyServer {
@@ -43,6 +43,7 @@ func newTproxyServer(p *proxyapp) *tproxyServer {
 			if err := conn.Control(func(fd uintptr) {
 				operr = unix.SetsockoptInt(int(fd), unix.IPPROTO_TCP, unix.TCP_USER_TIMEOUT, int(timeout.Milliseconds()))
 				operr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_REUSEADDR, 1)
+				operr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_REUSEPORT, 1)
 				operr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_SNDBUF, size)
 				operr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_RCVBUF, size)
 				if ts.p.tproxyMode == "tproxy" {
@@ -87,6 +88,9 @@ func (ts *tproxyServer) serve() {
 				ts.p.logger.Error().Err(err).Msg("Failed accepting connection")
 			}
 		} else {
+			if ts.closingFlag.Load() {
+				return
+			}
 			ts.wg.Add(1)
 			err := conn.SetDeadline(time.Now().Add(timeout))
 			if err != nil {
@@ -229,6 +233,7 @@ func (ts *tproxyServer) Shutdown() {
 		time.Sleep(50 * time.Millisecond)
 	}
 	close(ts.quit)
+	ts.closingFlag.Store(true)
 	ts.listener.Close()
 	done := make(chan struct{})
 	go func() {
@@ -238,7 +243,6 @@ func (ts *tproxyServer) Shutdown() {
 
 	select {
 	case <-done:
-		ts.p.logger.Info().Msgf("[tcp %s] Server gracefully shutdown", ts.p.tproxyMode)
 		return
 	case <-time.After(shutdownTimeout):
 		ts.p.logger.Error().Msgf("[tcp %s] Server timed out waiting for connections to finish", ts.p.tproxyMode)

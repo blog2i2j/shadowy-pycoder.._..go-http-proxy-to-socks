@@ -107,7 +107,7 @@ You can download the binary for your platform from [Releases](https://github.com
 Example:
 
 ```shell
-GOHPTS_RELEASE=v1.11.0; wget -v https://github.com/shadowy-pycoder/go-http-proxy-to-socks/releases/download/$GOHPTS_RELEASE/gohpts-$GOHPTS_RELEASE-linux-amd64.tar.gz -O gohpts && tar xvzf gohpts && mv -f gohpts-$GOHPTS_RELEASE-linux-amd64 gohpts && ./gohpts -h
+GOHPTS_RELEASE=v1.11.1; wget -v https://github.com/shadowy-pycoder/go-http-proxy-to-socks/releases/download/$GOHPTS_RELEASE/gohpts-$GOHPTS_RELEASE-linux-amd64.tar.gz -O gohpts && tar xvzf gohpts && mv -f gohpts-$GOHPTS_RELEASE-linux-amd64 gohpts && ./gohpts -h
 ```
 
 Alternatively, you can install it using `go install` command (requires Go [1.24](https://go.dev/doc/install) or later):
@@ -145,6 +145,7 @@ GitHub: https://github.com/shadowy-pycoder/go-http-proxy-to-socks
 
 Usage: gohpts [OPTIONS]
 OPTIONS:
+  General:
   -h        Show this help message and exit
   -v        Show version and build information
   -D        Run as a daemon (provide -logfile to see logs)
@@ -177,6 +178,8 @@ OPTIONS:
   -T        Address of transparent proxy server (no HTTP)
   -Tu       Address of transparent UDP proxy server
   -M        Transparent proxy mode: (redirect, tproxy)
+  -w        Number of instances of transparent proxy server (Default: number of CPU cores)
+  -wu       Number of instances of transparent UDP proxy server (Default: number of CPU cores)
   -auto     Automatically setup iptables for transparent proxy (requires elevated privileges)
   -arpspoof Enable ARP spoof proxy for selected targets (Example: "targets 10.0.0.1,10.0.0.5-10,192.168.1.*,192.168.10.0/24;fullduplex false;debug true")
   -mark     Set mark for each packet sent through transparent proxy (Default: redirect 0, tproxy 100)

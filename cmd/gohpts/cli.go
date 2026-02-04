@@ -30,6 +30,7 @@ GitHub: https://github.com/shadowy-pycoder/go-http-proxy-to-socks
 
 Usage: gohpts [OPTIONS]
 OPTIONS:
+  General:
   -h        Show this help message and exit
   -v        Show version and build information
   -D        Run as a daemon (provide -logfile to see logs)
@@ -64,6 +65,8 @@ const usageTproxy string = `
   -T        Address of transparent proxy server (no HTTP)
   -Tu       Address of transparent UDP proxy server
   -M        Transparent proxy mode: (redirect, tproxy)
+  -w        Number of instances of transparent proxy server (Default: number of CPU cores)
+  -wu       Number of instances of transparent UDP proxy server (Default: number of CPU cores)
   -auto     Automatically setup iptables for transparent proxy (requires elevated privileges)
   -arpspoof Enable ARP spoof proxy for selected targets (Example: "targets 10.0.0.1,10.0.0.5-10,192.168.1.*,192.168.10.0/24;fullduplex false;debug true")
   -mark     Set mark for each packet sent through transparent proxy (Default: redirect 0, tproxy 100)
@@ -117,6 +120,18 @@ func root(args []string) error {
 			conf.TProxyMode = flagValue
 			return nil
 		})
+		flags.UintVar(
+			&conf.TProxyWorkers,
+			"w",
+			0,
+			"Number of instances of transparent proxy server (Default: number of CPU cores)",
+		)
+		flags.UintVar(
+			&conf.TProxyUDPWorkers,
+			"wu",
+			0,
+			"Number of instances of transparent UDP proxy server (Default: number of CPU cores)",
+		)
 		flags.BoolVar(
 			&conf.Auto,
 			"auto",
@@ -199,9 +214,14 @@ func root(args []string) error {
 			return fmt.Errorf("transparent proxy mode requires -t, -T or -Tu flag")
 		}
 	}
-	if seen["auto"] {
-		if !seen["t"] && !seen["T"] && !seen["Tu"] {
-			return fmt.Errorf("-auto requires -t, -T or -Tu flag")
+	if seen["w"] {
+		if !seen["t"] && !seen["T"] {
+			return fmt.Errorf("-w requires -t, or -T flag")
+		}
+	}
+	if seen["wu"] {
+		if !seen["Tu"] {
+			return fmt.Errorf("-wu requires -Tu flag")
 		}
 	}
 	if seen["mark"] {
