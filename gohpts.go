@@ -57,32 +57,34 @@ var (
 )
 
 type Config struct {
-	AddrHTTP       string
-	AddrSOCKS      string
-	AddrPprof      string
-	User           string
-	Pass           string
-	ServerUser     string
-	ServerPass     string
-	CertFile       string
-	KeyFile        string
-	Interface      string
-	ServerConfPath string
-	TProxy         string
-	TProxyOnly     string
-	TProxyUDP      string
-	TProxyMode     string
-	Auto           bool
-	Mark           uint
-	ARPSpoof       string
-	IgnoredPorts   string
-	LogFilePath    string
-	Debug          bool
-	JSON           bool
-	Sniff          bool
-	SniffLogFile   string
-	NoColor        bool
-	Body           bool
+	AddrHTTP         string
+	AddrSOCKS        string
+	AddrPprof        string
+	User             string
+	Pass             string
+	ServerUser       string
+	ServerPass       string
+	CertFile         string
+	KeyFile          string
+	Interface        string
+	ServerConfPath   string
+	TProxy           string
+	TProxyOnly       string
+	TProxyUDP        string
+	TProxyMode       string
+	TProxyWorkers    uint
+	TProxyUDPWorkers uint
+	Auto             bool
+	Mark             uint
+	ARPSpoof         string
+	IgnoredPorts     string
+	LogFilePath      string
+	Debug            bool
+	JSON             bool
+	Sniff            bool
+	SniffLogFile     string
+	NoColor          bool
+	Body             bool
 }
 
 type logWriter struct {
@@ -131,36 +133,38 @@ type serverConfig struct {
 	Server    server       `yaml:"server"`
 }
 type proxyapp struct {
-	httpServer     *http.Server
-	sockClient     *http.Client
-	httpClient     *http.Client
-	sockDialer     *socks5.Dialer
-	logger         *zerolog.Logger
-	snifflogger    *zerolog.Logger
-	certFile       string
-	keyFile        string
-	httpServerAddr string
-	pprofAddr      string
-	iface          *net.Interface
-	tproxyAddr     string
-	tproxyAddrUDP  string
-	tproxyMode     string
-	auto           bool
-	mark           uint
-	arpspoofer     *arpspoof.ARPSpoofer
-	ignoredPorts   string
-	user           string
-	pass           string
-	proxychain     chain
-	proxylist      []proxyEntry
-	rrIndex        uint32
-	rrIndexReset   uint32
-	sniff          bool
-	nocolor        bool
-	body           bool
-	json           bool
-	debug          bool
-	closeConn      chan bool
+	httpServer       *http.Server
+	sockClient       *http.Client
+	httpClient       *http.Client
+	sockDialer       *socks5.Dialer
+	logger           *zerolog.Logger
+	snifflogger      *zerolog.Logger
+	certFile         string
+	keyFile          string
+	httpServerAddr   string
+	pprofAddr        string
+	iface            *net.Interface
+	tproxyAddr       string
+	tproxyAddrUDP    string
+	tproxyMode       string
+	tproxyWorkers    uint
+	tproxyUDPWorkers uint
+	auto             bool
+	mark             uint
+	arpspoofer       *arpspoof.ARPSpoofer
+	ignoredPorts     string
+	user             string
+	pass             string
+	proxychain       chain
+	proxylist        []proxyEntry
+	rrIndex          uint32
+	rrIndexReset     uint32
+	sniff            bool
+	nocolor          bool
+	body             bool
+	json             bool
+	debug            bool
+	closeConn        chan bool
 
 	mu             sync.RWMutex
 	availProxyList []proxyEntry
@@ -302,6 +306,18 @@ func New(conf *Config) *proxyapp {
 	}
 	if network.AddrEqual(p.tproxyAddr, p.tproxyAddrUDP) {
 		p.logger.Fatal().Msgf("%s: address already in use", p.tproxyAddrUDP)
+	}
+	p.tproxyWorkers = conf.TProxyWorkers
+	if p.tproxyWorkers > 0 && !slices.Contains(SupportedTProxyOS, runtime.GOOS) {
+		p.logger.Fatal().Msg("Setting the number of instances of transparent proxy is available only on linux/android systems")
+	} else if p.tproxyWorkers == 0 && slices.Contains(SupportedTProxyOS, runtime.GOOS) {
+		p.tproxyWorkers = uint(runtime.NumCPU())
+	}
+	p.tproxyUDPWorkers = conf.TProxyUDPWorkers
+	if p.tproxyUDPWorkers > 0 && !slices.Contains(SupportedTProxyOS, runtime.GOOS) {
+		p.logger.Fatal().Msg("Setting the number of instances of transparent proxy is available only on linux/android systems")
+	} else if p.tproxyUDPWorkers == 0 && slices.Contains(SupportedTProxyOS, runtime.GOOS) {
+		p.tproxyUDPWorkers = uint(runtime.NumCPU())
 	}
 	p.auto = conf.Auto
 	if p.auto && !slices.Contains(SupportedTProxyOS, runtime.GOOS) {
@@ -516,14 +532,22 @@ func New(conf *Config) *proxyapp {
 		}
 	}
 	if p.tproxyAddr != "" {
+		suffix := ""
+		if p.tproxyWorkers != 1 {
+			suffix = "s"
+		}
 		if p.tproxyMode == "tproxy" {
-			p.logger.Info().Msgf("TPROXY: %s", p.tproxyAddr)
+			p.logger.Info().Msgf("TPROXY: %s (%d instance%s)", p.tproxyAddr, p.tproxyWorkers, suffix)
 		} else {
-			p.logger.Info().Msgf("REDIRECT: %s", p.tproxyAddr)
+			p.logger.Info().Msgf("REDIRECT: %s (%d instance%s)", p.tproxyAddr, p.tproxyWorkers, suffix)
 		}
 	}
 	if p.tproxyAddrUDP != "" {
-		p.logger.Info().Msgf("TPROXY (UDP): %s", p.tproxyAddrUDP)
+		suffix := ""
+		if p.tproxyUDPWorkers != 1 {
+			suffix = "s"
+		}
+		p.logger.Info().Msgf("TPROXY (UDP): %s (%d instanse%s)", p.tproxyAddrUDP, p.tproxyUDPWorkers, suffix)
 	}
 	if p.pprofAddr != "" {
 		p.logger.Info().Msgf("PPROF: %s", p.pprofAddr)
@@ -548,22 +572,28 @@ func (p *proxyapp) Run() {
 	if p.arpspoofer != nil {
 		go p.arpspoofer.Start()
 	}
-	var tproxyServer *tproxyServer
-	opts := make(map[string]string, 5)
+	tproxyEnabled := p.tproxyAddr != ""
+	tproxyServers := make([]*tproxyServer, p.tproxyWorkers)
+	opts := make(map[string]string, 20)
 	if p.auto {
 		p.applyCommonRedirectRules(opts)
 	}
-	if p.tproxyAddr != "" {
-		tproxyServer = newTproxyServer(p)
+	if tproxyEnabled {
+		for i := range tproxyServers {
+			tproxyServers[i] = newTproxyServer(p)
+		}
 		if p.auto {
-			tproxyServer.ApplyRedirectRules(opts)
+			tproxyServers[0].ApplyRedirectRules(opts) // NOTE: probably stupid, need to move TCP settings in a separate function
 		}
 	}
-	var tproxyServerUDP *tproxyServerUDP
-	if p.tproxyAddrUDP != "" {
-		tproxyServerUDP = newTproxyServerUDP(p)
+	tproxyUDPEnabled := p.tproxyAddrUDP != ""
+	tproxyUDPServers := make([]*tproxyServerUDP, p.tproxyUDPWorkers)
+	if tproxyUDPEnabled {
+		for i := range tproxyUDPServers {
+			tproxyUDPServers[i] = newTproxyServerUDP(p)
+		}
 		if p.auto {
-			tproxyServerUDP.ApplyRedirectRules(opts)
+			tproxyUDPServers[0].ApplyRedirectRules(opts)
 		}
 	}
 	if p.proxylist != nil {
@@ -587,26 +617,44 @@ func (p *proxyapp) Run() {
 				}
 			}
 			close(p.closeConn)
-			if tproxyServer != nil {
+			var wg sync.WaitGroup
+			if tproxyEnabled {
 				p.logger.Info().Msgf("[tcp %s] Server is shutting down...", p.tproxyMode)
 				if p.auto {
-					err := tproxyServer.ClearRedirectRules()
+					err := tproxyServers[0].ClearRedirectRules()
 					if err != nil {
 						p.logger.Error().Err(err).Msg("Failed clearing iptables rules")
 					}
 				}
-				tproxyServer.Shutdown()
+				wg.Add(int(p.tproxyWorkers))
+				for i, tproxyServer := range tproxyServers {
+					go func() {
+						p.logger.Info().Msgf("[tcp %s] Server %d is shutting down...", p.tproxyMode, i)
+						tproxyServer.Shutdown()
+						p.logger.Info().Msgf("[tcp %s] Server %d gracefully shutdown", p.tproxyMode, i)
+						wg.Done()
+					}()
+				}
 			}
-			if tproxyServerUDP != nil {
+			if tproxyUDPEnabled {
 				p.logger.Info().Msgf("[udp %s] Server is shutting down...", p.tproxyMode)
 				if p.auto {
-					err := tproxyServerUDP.ClearRedirectRules()
+					err := tproxyUDPServers[0].ClearRedirectRules()
 					if err != nil {
 						p.logger.Error().Err(err).Msg("Failed clearing iptables rules")
 					}
 				}
-				tproxyServerUDP.Shutdown()
+				wg.Add(int(p.tproxyUDPWorkers))
+				for i, tproxyServerUDP := range tproxyUDPServers {
+					go func() {
+						p.logger.Info().Msgf("[udp %s] Server %d is shutting down...", p.tproxyMode, i)
+						tproxyServerUDP.Shutdown()
+						p.logger.Info().Msgf("[udp %s] Server %d gracefully shutdown", p.tproxyMode, i)
+						wg.Done()
+					}()
+				}
 			}
+			wg.Wait()
 			if p.auto {
 				err := p.clearCommonRedirectRules(opts)
 				if err != nil {
@@ -623,11 +671,15 @@ func (p *proxyapp) Run() {
 			}
 			close(done)
 		}()
-		if tproxyServer != nil {
-			go tproxyServer.ListenAndServe()
+		if tproxyEnabled {
+			for _, tproxyServer := range tproxyServers {
+				go tproxyServer.ListenAndServe()
+			}
 		}
-		if tproxyServerUDP != nil {
-			go tproxyServerUDP.ListenAndServe()
+		if tproxyUDPEnabled {
+			for _, tproxyServerUDP := range tproxyUDPServers {
+				go tproxyServerUDP.ListenAndServe()
+			}
 		}
 		if p.user != "" && p.pass != "" {
 			p.httpServer.Handler = p.proxyAuth(p.handler())
@@ -654,26 +706,43 @@ func (p *proxyapp) Run() {
 				}
 			}
 			close(p.closeConn)
-			if tproxyServer != nil {
-				p.logger.Info().Msgf("[tcp %s] Server is shutting down...", p.tproxyMode)
+			var wg sync.WaitGroup
+			if tproxyEnabled {
 				if p.auto {
-					err := tproxyServer.ClearRedirectRules()
+					err := tproxyServers[0].ClearRedirectRules()
 					if err != nil {
 						p.logger.Error().Err(err).Msg("Failed clearing iptables rules")
 					}
 				}
-				tproxyServer.Shutdown()
+
+				wg.Add(int(p.tproxyWorkers))
+				for i, tproxyServer := range tproxyServers {
+					go func() {
+						p.logger.Info().Msgf("[tcp %s] Server %d is shutting down...", p.tproxyMode, i)
+						tproxyServer.Shutdown()
+						p.logger.Info().Msgf("[tcp %s] Server %d gracefully shutdown", p.tproxyMode, i)
+						wg.Done()
+					}()
+				}
 			}
-			if tproxyServerUDP != nil {
-				p.logger.Info().Msgf("[udp %s] Server is shutting down...", p.tproxyMode)
+			if tproxyUDPEnabled {
 				if p.auto {
-					err := tproxyServerUDP.ClearRedirectRules()
+					err := tproxyUDPServers[0].ClearRedirectRules()
 					if err != nil {
 						p.logger.Error().Err(err).Msg("Failed clearing iptables rules")
 					}
 				}
-				tproxyServerUDP.Shutdown()
+				wg.Add(int(p.tproxyUDPWorkers))
+				for i, tproxyServerUDP := range tproxyUDPServers {
+					go func() {
+						p.logger.Info().Msgf("[udp %s] Server %d is shutting down...", p.tproxyMode, i)
+						tproxyServerUDP.Shutdown()
+						p.logger.Info().Msgf("[udp %s] Server %d gracefully shutdown", p.tproxyMode, i)
+						wg.Done()
+					}()
+				}
 			}
+			wg.Wait()
 			if p.auto {
 				err := p.clearCommonRedirectRules(opts)
 				if err != nil {
@@ -682,13 +751,33 @@ func (p *proxyapp) Run() {
 			}
 			close(done)
 		}()
-		if tproxyServer != nil && tproxyServerUDP != nil {
-			go tproxyServerUDP.ListenAndServe()
-			tproxyServer.ListenAndServe()
-		} else if tproxyServer != nil {
-			tproxyServer.ListenAndServe()
+		if tproxyEnabled && tproxyUDPEnabled {
+			for _, tproxyServerUDP := range tproxyUDPServers {
+				go tproxyServerUDP.ListenAndServe()
+			}
+			for i, tproxyServer := range tproxyServers {
+				if i < len(tproxyServers)-1 {
+					go tproxyServer.ListenAndServe()
+				} else {
+					tproxyServer.ListenAndServe()
+				}
+			}
+		} else if tproxyEnabled {
+			for i, tproxyServer := range tproxyServers {
+				if i < len(tproxyServers)-1 {
+					go tproxyServer.ListenAndServe()
+				} else {
+					tproxyServer.ListenAndServe()
+				}
+			}
 		} else {
-			tproxyServerUDP.ListenAndServe()
+			for i, tproxyServerUDP := range tproxyUDPServers {
+				if i < len(tproxyUDPServers)-1 {
+					go tproxyServerUDP.ListenAndServe()
+				} else {
+					tproxyServerUDP.ListenAndServe()
+				}
+			}
 		}
 	}
 	<-done
