@@ -603,7 +603,7 @@ func (tsu *tproxyServerUDP) handleDNSConnection(conn *dnsConn) {
 			if err := dns.Parse(buf[:nr]); err == nil {
 				conn.respChan <- dns
 			} else {
-				tsu.p.logger.Error().Err(err).Msgf("%v", buf[:nr])
+				tsu.p.logger.Debug().Err(err).Msgf("%v", buf[:nr])
 			}
 		}
 		nw, ew := tsu.gwConn.WriteToUDP(buf[0:nr], conn.srcAddr)

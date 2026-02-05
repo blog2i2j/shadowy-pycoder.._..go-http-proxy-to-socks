@@ -36,8 +36,8 @@ github.com/shadowy-pycoder/arpspoof v0.0.1 h1:K5D+cVGc3SCTI4VxSB6oE2x8SJgxRjE72E
 github.com/shadowy-pycoder/arpspoof v0.0.1/go.mod h1:dsVZh4gbbQFA4BQLEmL2qpsjtytKwxaf4oA2tRmvCW8=
 github.com/shadowy-pycoder/colors v0.0.1 h1:weCj/YIOupqy4BSP8KuVzr20fC+cuAv/tArz7bhhkP4=
 github.com/shadowy-pycoder/colors v0.0.1/go.mod h1:lkrJS1PY2oVigNLTT6pkbF7B/v0YcU2LD5PZnss1Q4U=
-github.com/shadowy-pycoder/mshark v0.0.17 h1:ZVgMHt89Gzij2VXwEf2E4Jnjc5ItOvbVehGwc1V6YyY=
-github.com/shadowy-pycoder/mshark v0.0.17/go.mod h1:Txx0p8JxYOGd+0V+6N9MeCUGtGdfHAATWE8KB1nd7H0=
+github.com/shadowy-pycoder/mshark v0.0.18 h1:SaNsl7U2N1LaDc8ZGfdOclRI0UsyiDE/39NjxU2dHnQ=
+github.com/shadowy-pycoder/mshark v0.0.18/go.mod h1:Txx0p8JxYOGd+0V+6N9MeCUGtGdfHAATWE8KB1nd7H0=
 github.com/stretchr/testify v1.9.0 h1:HtqpIVDClZ4nwg75+f6Lvsy/wHu+3BoSGCbBAcpTsTg=
 github.com/stretchr/testify v1.9.0/go.mod h1:r2ic/lqez/lEtzL7wO/rwa5dbSLXVDPFyf8C91i36aY=
 github.com/wzshiming/socks5 v0.5.2 h1:LtoowVNwAmkIQSkP1r1Wg435xUmC+tfRxorNW30KtnM=
