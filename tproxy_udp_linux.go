@@ -50,10 +50,10 @@ func (uc *udpConn) DstPort() *uint16 {
 	return &dstPort
 }
 
-func newUDPConn(srcAddr *net.UDPAddr, dstAddr *net.UDPAddr, sockDialer *socks5.Dialer) (*udpConn, error) {
+func newUDPConn(srcAddr *net.UDPAddr, dstAddr *net.UDPAddr, sockDialer *socks5.Dialer, network string) (*udpConn, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	conn, err := sockDialer.DialContext(ctx, "udp4", dstAddr.String())
+	conn, err := sockDialer.DialContext(ctx, network, dstAddr.String())
 	if err != nil {
 		return nil, err
 	}
@@ -162,6 +162,10 @@ func newTproxyServerUDP(p *proxyapp) *tproxyServerUDP {
 				operr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_REUSEPORT, 1)
 				operr = unix.SetsockoptInt(int(fd), unix.SOL_IP, unix.IP_TRANSPARENT, 1)
 				operr = unix.SetsockoptInt(int(fd), unix.SOL_IP, unix.IP_RECVORIGDSTADDR, 1)
+				if tsu.p.ipv6enabled {
+					operr = unix.SetsockoptInt(int(fd), unix.SOL_IPV6, unix.IPV6_TRANSPARENT, 1)
+					operr = unix.SetsockoptInt(int(fd), unix.SOL_IPV6, unix.IPV6_RECVORIGDSTADDR, 1)
+				}
 				operr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_SNDBUF, size)
 				operr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_RCVBUF, size)
 			}); err != nil {
@@ -170,7 +174,7 @@ func newTproxyServerUDP(p *proxyapp) *tproxyServerUDP {
 			return operr
 		},
 	}
-	pconn, err := lc.ListenPacket(context.Background(), "udp4", tsu.p.tproxyAddrUDP)
+	pconn, err := lc.ListenPacket(context.Background(), tsu.p.udp, tsu.p.tproxyAddrUDP)
 	if err != nil {
 		var msg string
 		if errors.Is(err, unix.EPERM) {
@@ -211,7 +215,7 @@ func newTproxyServerUDP(p *proxyapp) *tproxyServerUDP {
 				return operr
 			},
 		}
-		pconn, err = lc.ListenPacket(context.Background(), "udp4", tsu.gwDNS.String())
+		pconn, err = lc.ListenPacket(context.Background(), tsu.p.udp, tsu.gwDNS.String())
 		if err != nil {
 			tsu.p.logger.Fatal().Err(err).Msgf("[udp %s] failed listening on gateway DNS", tsu.p.tproxyMode)
 		}
@@ -261,7 +265,7 @@ func (tsu *tproxyServerUDP) ListenAndServe() {
 						tsu.p.logger.Error().Err(err).Msgf("[udp %s] Failed getting SOCKS5 client for %s→ %s", tsu.p.tproxyMode, srcAddr, dstAddr)
 						continue
 					}
-					conn, err = newUDPConn(srcAddr, dstAddr, sockDialer)
+					conn, err = newUDPConn(srcAddr, dstAddr, sockDialer, tsu.p.udp)
 					if err != nil {
 						tsu.p.logger.Error().Err(err).Msgf("[udp %s] Failed creating UDP connection for %s→ %s", tsu.p.tproxyMode, srcAddr, dstAddr)
 						continue
@@ -440,11 +444,11 @@ func (dc *dnsConn) close() error {
 	return dc.Close()
 }
 
-func newDNSConn(srcAddr, dstAddr *net.UDPAddr, mark uint) (*dnsConn, error) {
+func newDNSConn(srcAddr, dstAddr *net.UDPAddr, mark uint, network string) (*dnsConn, error) {
 	dialer := getBaseDialer(timeout, mark)
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	conn, err := dialer.DialContext(ctx, "udp4", dstAddr.String())
+	conn, err := dialer.DialContext(ctx, network, dstAddr.String())
 	if err != nil {
 		return nil, err
 	}
@@ -482,7 +486,7 @@ func (tsu *tproxyServerUDP) listenAndServeDNS() {
 			}
 			n, srcAddr, er := tsu.gwConn.ReadFromUDP(buf)
 			if n > 0 {
-				conn, err := newDNSConn(srcAddr, tsu.gwDNS, tsu.p.mark)
+				conn, err := newDNSConn(srcAddr, tsu.gwDNS, tsu.p.mark, tsu.p.udp)
 				if err != nil {
 					tsu.p.logger.Error().Err(err).Msgf("[udp %s] Failed creating UDP connection %s→ %s", tsu.p.tproxyMode, srcAddr, tsu.gwDNS)
 					continue
@@ -665,7 +669,18 @@ func (tsu *tproxyServerUDP) getOriginalDst(oob []byte) (*net.UDPAddr, error) {
 			copy((*[unsafe.Sizeof(*originalDst)]byte)(unsafe.Pointer(originalDst))[:], cmsg.Data)
 			dstHost := netip.AddrFrom4(originalDst.Addr)
 			dstPort := uint16(originalDst.Port<<8) | originalDst.Port>>8
-			dstAddr, err := net.ResolveUDPAddr("udp4", fmt.Sprintf("%s:%d", dstHost, dstPort))
+			dstAddr, err := net.ResolveUDPAddr(tsu.p.udp /* NOTE: does not matter */, netip.AddrPortFrom(dstHost, dstPort).String())
+			if err != nil {
+				return nil, err
+			}
+			return dstAddr, nil
+		}
+		if cmsg.Header.Level == unix.SOL_IPV6 && cmsg.Header.Type == unix.IPV6_RECVORIGDSTADDR {
+			originalDst := &syscall.RawSockaddrInet6{}
+			copy((*[unsafe.Sizeof(*originalDst)]byte)(unsafe.Pointer(originalDst))[:], cmsg.Data)
+			dstHost := netip.AddrFrom16(originalDst.Addr)
+			dstPort := uint16(originalDst.Port<<8) | originalDst.Port>>8
+			dstAddr, err := net.ResolveUDPAddr(tsu.p.udp, netip.AddrPortFrom(dstHost, dstPort).String())
 			if err != nil {
 				return nil, err
 			}
@@ -685,22 +700,37 @@ func (tsu *tproxyServerUDP) ApplyRedirectRules(opts map[string]string) {
 	case "redirect":
 		tsu.p.logger.Fatal().Msgf("Unsupported mode: %s", tsu.p.tproxyMode)
 	case "tproxy":
-		cmdClear := exec.Command("bash", "-c", fmt.Sprintf(`
+		cmdClear0 := exec.Command("bash", "-c", fmt.Sprintf(`
         %s
         iptables -t mangle -D PREROUTING -p udp -m socket -j DIVERT 2>/dev/null || true
         iptables -t mangle -D PREROUTING -p udp -j GOHPTS_UDP 2>/dev/null || true
         iptables -t mangle -F GOHPTS_UDP 2>/dev/null || true
         iptables -t mangle -X GOHPTS_UDP 2>/dev/null || true
         `, setex))
-		cmdClear.Stdout = os.Stdout
-		cmdClear.Stderr = os.Stderr
-		if err := cmdClear.Run(); err != nil {
+		cmdClear0.Stdout = os.Stdout
+		cmdClear0.Stderr = os.Stderr
+		if err := cmdClear0.Run(); err != nil {
 			tsu.p.logger.Fatal().Err(err).Msgf("[udp %s] Failed while configuring iptables. Are you root?", tsu.p.tproxyMode)
+		}
+		if tsu.p.ipv6enabled {
+			cmdClear1 := exec.Command("bash", "-c", fmt.Sprintf(`
+        %s
+        ip6tables -t mangle -D PREROUTING -p udp -m socket -j DIVERT 2>/dev/null || true
+        ip6tables -t mangle -D PREROUTING -p udp -j GOHPTS_UDP 2>/dev/null || true
+        ip6tables -t mangle -F GOHPTS_UDP 2>/dev/null || true
+        ip6tables -t mangle -X GOHPTS_UDP 2>/dev/null || true
+        `, setex))
+			cmdClear1.Stdout = os.Stdout
+			cmdClear1.Stderr = os.Stderr
+			if err := cmdClear1.Run(); err != nil {
+				tsu.p.logger.Fatal().Err(err).Msgf("[udp %s] Failed while configuring iptables. Are you root?", tsu.p.tproxyMode)
+			}
 		}
 		prefix, err := network.GetIPv4PrefixFromInterface(tsu.iface)
 		if err != nil {
 			tsu.p.logger.Fatal().Err(err).Msgf("[udp %s] Failed getting host from %s", tsu.p.tproxyMode, tsu.iface.Name)
 		}
+		// TODO: do not proxy port 53 if arpspoof is disabled ???
 		cmdInit0 := exec.Command("bash", "-c", fmt.Sprintf(`
         %s
         iptables -t mangle -N GOHPTS_UDP 2>/dev/null || true
@@ -716,6 +746,23 @@ func (tsu *tproxyServerUDP) ApplyRedirectRules(opts map[string]string) {
 		if err := cmdInit0.Run(); err != nil {
 			tsu.p.logger.Fatal().Err(err).Msgf("[udp %s] Failed while configuring iptables. Are you root?", tsu.p.tproxyMode)
 		}
+		if tsu.p.ipv6enabled {
+			cmdInit01 := exec.Command("bash", "-c", fmt.Sprintf(`
+        %s
+        ip6tables -t mangle -N GOHPTS_UDP 2>/dev/null || true
+        ip6tables -t mangle -F GOHPTS_UDP
+
+		ip6tables -t mangle -A GOHPTS_UDP -p udp -d ::/128 -j RETURN
+		ip6tables -t mangle -A GOHPTS_UDP -p udp -d ::1/128 -j RETURN
+		ip6tables -t mangle -A GOHPTS_UDP -p udp -d ff00::/8 -j RETURN
+		ip6tables -t mangle -A GOHPTS_UDP -p udp -d fe80::/10 -j RETURN
+        `, setex))
+			cmdInit01.Stdout = os.Stdout
+			cmdInit01.Stderr = os.Stderr
+			if err := cmdInit01.Run(); err != nil {
+				tsu.p.logger.Fatal().Err(err).Msgf("[udp %s] Failed while configuring iptables. Are you root?", tsu.p.tproxyMode)
+			}
+		}
 		if tsu.p.ignoredPorts != "" {
 			cmdInit1 := exec.Command("bash", "-c", fmt.Sprintf(`
 			%s
@@ -725,23 +772,56 @@ func (tsu *tproxyServerUDP) ApplyRedirectRules(opts map[string]string) {
 			cmdInit1.Stdout = os.Stdout
 			cmdInit1.Stderr = os.Stderr
 			if err := cmdInit1.Run(); err != nil {
-				tsu.p.logger.Fatal().Err(err).Msgf("[tcp %s] Failed while configuring iptables. Are you root?", tsu.p.tproxyMode)
+				tsu.p.logger.Fatal().Err(err).Msgf("[udp %s] Failed while configuring iptables. Are you root?", tsu.p.tproxyMode)
+			}
+			if tsu.p.ipv6enabled {
+				cmdInit11 := exec.Command("bash", "-c", fmt.Sprintf(`
+			%s
+		    ip6tables -t mangle -A GOHPTS_UDP -p udp -m multiport --dports %s -j RETURN
+		    ip6tables -t mangle -A GOHPTS_UDP -p udp -m multiport --sports %s -j RETURN
+			`, setex, tsu.p.ignoredPorts, tsu.p.ignoredPorts))
+				cmdInit11.Stdout = os.Stdout
+				cmdInit11.Stderr = os.Stderr
+				if err := cmdInit11.Run(); err != nil {
+					tsu.p.logger.Fatal().Err(err).Msgf("[udp %s] Failed while configuring iptables. Are you root?", tsu.p.tproxyMode)
+				}
 			}
 		}
-		cmdDocker := exec.Command("bash", "-c", fmt.Sprintf(`
+		var cmdDocker *exec.Cmd
+		if tsu.p.ipv6enabled {
+			cmdDocker = exec.Command("bash", "-c", fmt.Sprintf(`
         %s
         if command -v docker >/dev/null 2>&1
-        then
-            for subnet in $(docker network inspect $(docker network ls -q) --format '{{range .IPAM.Config}}{{.Subnet}}{{end}}'); do
-              iptables -t mangle -A GOHPTS_UDP -p udp -d "$subnet" -j RETURN
-            done
-        fi`, setex))
+		then
+			for subnet in $(docker network inspect $(docker network ls -q)  --format '{{range .IPAM.Config}}{{println .Subnet}}{{end}}'); do
+			  if [[ "$subnet" == *:* ]]; then
+				ip6tables -t mangle -A GOHPTS_UDP -p udp -d "$subnet" -j RETURN
+			  else
+				iptables -t mangle -A GOHPTS_UDP -p udp -d "$subnet" -j RETURN
+			  fi
+			done
+		fi
+        `, setex))
+		} else {
+			cmdDocker = exec.Command("bash", "-c", fmt.Sprintf(`
+        %s
+        if command -v docker >/dev/null 2>&1
+		then
+			for subnet in $(docker network inspect $(docker network ls -q)  --format '{{range .IPAM.Config}}{{println .Subnet}}{{end}}'); do
+			  if [[ "$subnet" == *:* ]]; then
+				continue
+			  else
+				iptables -t mangle -A GOHPTS_UDP -p udp -d "$subnet" -j RETURN
+			  fi
+			done
+		fi
+        `, setex))
+		}
 		cmdDocker.Stdout = os.Stdout
 		cmdDocker.Stderr = os.Stderr
 		if err := cmdDocker.Run(); err != nil {
 			tsu.p.logger.Fatal().Err(err).Msgf("[udp %s] Failed while configuring iptables. Are you root?", tsu.p.tproxyMode)
 		}
-
 		cmdInit := exec.Command("bash", "-c", fmt.Sprintf(`
         %s
         iptables -t mangle -A GOHPTS_UDP -p udp -m mark --mark %d -j RETURN
@@ -755,6 +835,21 @@ func (tsu *tproxyServerUDP) ApplyRedirectRules(opts map[string]string) {
 		if err := cmdInit.Run(); err != nil {
 			tsu.p.logger.Fatal().Err(err).Msgf("[udp %s] Failed while configuring iptables. Are you root?", tsu.p.tproxyMode)
 		}
+		if tsu.p.ipv6enabled {
+			cmdInit6 := exec.Command("bash", "-c", fmt.Sprintf(`
+        %s
+        ip6tables -t mangle -A GOHPTS_UDP -p udp -m mark --mark %d -j RETURN
+        ip6tables -t mangle -A GOHPTS_UDP -p udp -j TPROXY --on-port %s --tproxy-mark 1
+
+        ip6tables -t mangle -A PREROUTING -p udp -m socket -j DIVERT
+        ip6tables -t mangle -A PREROUTING -p udp -j GOHPTS_UDP
+        `, setex, tsu.p.mark, tproxyPortUDP))
+			cmdInit6.Stdout = os.Stdout
+			cmdInit6.Stderr = os.Stderr
+			if err := cmdInit6.Run(); err != nil {
+				tsu.p.logger.Fatal().Err(err).Msgf("[udp %s] Failed while configuring iptables. Are you root?", tsu.p.tproxyMode)
+			}
+		}
 		_ = createSysctlOptCmd("net.ipv4.ip_nonlocal_bind", "1", setex, opts, tsu.p.debug).Run()
 	default:
 		tsu.p.logger.Fatal().Msgf("Unreachable, unknown mode: %s", tsu.p.tproxyMode)
@@ -767,20 +862,37 @@ func (tsu *tproxyServerUDP) ClearRedirectRules() error {
 		setex = "set -ex"
 	}
 	if tsu.p.tproxyMode == "tproxy" {
-		cmd := exec.Command("bash", "-c", fmt.Sprintf(`
+		cmd0 := exec.Command("bash", "-c", fmt.Sprintf(`
         %s
         iptables -t mangle -D PREROUTING -p udp -m socket -j DIVERT 2>/dev/null || true
         iptables -t mangle -D PREROUTING -p udp -j GOHPTS_UDP 2>/dev/null || true
         iptables -t mangle -F GOHPTS_UDP 2>/dev/null || true
         iptables -t mangle -X GOHPTS_UDP 2>/dev/null || true
         `, setex))
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
+		cmd0.Stdout = os.Stdout
+		cmd0.Stderr = os.Stderr
 		if !tsu.p.debug {
-			cmd.Stdout = nil
+			cmd0.Stdout = nil
 		}
-		if err := cmd.Run(); err != nil {
+		if err := cmd0.Run(); err != nil {
 			return err
+		}
+		if tsu.p.ipv6enabled {
+			cmd1 := exec.Command("bash", "-c", fmt.Sprintf(`
+        %s
+        ip6tables -t mangle -D PREROUTING -p udp -m socket -j DIVERT 2>/dev/null || true
+        ip6tables -t mangle -D PREROUTING -p udp -j GOHPTS_UDP 2>/dev/null || true
+        ip6tables -t mangle -F GOHPTS_UDP 2>/dev/null || true
+        ip6tables -t mangle -X GOHPTS_UDP 2>/dev/null || true
+        `, setex))
+			cmd1.Stdout = os.Stdout
+			cmd1.Stderr = os.Stderr
+			if !tsu.p.debug {
+				cmd1.Stdout = nil
+			}
+			if err := cmd1.Run(); err != nil {
+				return err
+			}
 		}
 	}
 	return nil

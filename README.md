@@ -24,6 +24,7 @@
   - [ARP spoofing](#arp-spoofing)
   - [UDP support](#udp-support)
   - [Android support](#android-support)
+  - [IPv6 support](#ipv6-support)
 - [Traffic sniffing](#traffic-sniffing)
   - [JSON format](#json-format)
   - [Colored format](#colored-format)
@@ -107,10 +108,10 @@ You can download the binary for your platform from [Releases](https://github.com
 Example:
 
 ```shell
-GOHPTS_RELEASE=v1.11.2; wget -v https://github.com/shadowy-pycoder/go-http-proxy-to-socks/releases/download/$GOHPTS_RELEASE/gohpts-$GOHPTS_RELEASE-linux-amd64.tar.gz -O gohpts && tar xvzf gohpts && mv -f gohpts-$GOHPTS_RELEASE-linux-amd64 gohpts && ./gohpts -h
+GOHPTS_RELEASE=v1.12.0; wget -v https://github.com/shadowy-pycoder/go-http-proxy-to-socks/releases/download/$GOHPTS_RELEASE/gohpts-$GOHPTS_RELEASE-linux-amd64.tar.gz -O gohpts && tar xvzf gohpts && mv -f gohpts-$GOHPTS_RELEASE-linux-amd64 gohpts && ./gohpts -h
 ```
 
-Alternatively, you can install it using `go install` command (requires Go [1.24](https://go.dev/doc/install) or later):
+Alternatively, you can install it using `go install` command (requires Go [1.26](https://go.dev/doc/install) or later):
 
 ```shell
 CGO_ENABLED=0 go install -ldflags "-s -w" -trimpath github.com/shadowy-pycoder/go-http-proxy-to-socks/cmd/gohpts@latest
@@ -160,6 +161,7 @@ OPTIONS:
   -u        User for SOCKS5 proxy authentication. This flag invokes prompt for password (not echoed to terminal)
   -i        Bind proxy to specific network interface (either by interface name or index)
   -f        Path to server configuration file in YAML format (overrides proxy flags above)
+  -6        Enable IPv6 support for TCP and UDP
 
   Logs:
   -d        Show logs in DEBUG mode
@@ -577,6 +579,40 @@ GOHPTS_RELEASE=v1.10.2; wget -v https://github.com/shadowy-pycoder/go-http-proxy
 # use your phone as router for LAN devices redirecting their traffic to remote socks5 server
 sudo ./gohpts -s remote -t 8888 -Tu :8989 -M tproxy -sniff -body -auto -mark 100 -d -arpspoof "fullduplex true;debug false"
 ```
+
+### IPv6 support
+
+To enable IPv6 handling just add `-6` flag, for example when using with transparent proxy:
+
+```shell
+sudo ./gohpts -T 8888 -M redirect -sniff -body -auto -mark 100 -d -6
+```
+
+For this to work, your ISP and remote socks5 proxy should have active IPv6 support, you can visit [https://test-ipv6.com/](https://test-ipv6.com/) to find out you can access IPv6 addresses.
+To test proxy in IPv6 mode you can use any Linux VM:
+
+1. On your virtual machine:
+
+```shell
+# add your host machine as gateway for VM
+export GATEWAY="<host IPv4 address"
+ip route add 0.0.0.0/1 via "$GATEWAY"
+ip route add 128.0.0.0/1 via "$GATEWAY"
+
+# add your host machine as gateway IPv6 for VM
+export GATEWAY6="<host IPv6 address"
+ip -6 route add ::/1 via "$GATEWAY6" dev eth0
+ip -6 route add 8000::/1 via "$GATEWAY6" dev eth0
+```
+
+2. On your host:
+
+```shell
+# run proxy on your host
+sudo ./gohpts -T 8888 -Tu 8889 -M tproxy -sniff -body -auto -d -6
+```
+
+3. Visit any website on your virtual machine and see traffic in proxy logs
 
 ## Traffic sniffing
 

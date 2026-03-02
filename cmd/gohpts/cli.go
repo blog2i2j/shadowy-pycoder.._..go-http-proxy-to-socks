@@ -45,6 +45,7 @@ OPTIONS:
   -u        User for SOCKS5 proxy authentication. This flag invokes prompt for password (not echoed to terminal)
   -i        Bind proxy to specific network interface (either by interface name or index)
   -f        Path to server configuration file in YAML format (overrides proxy flags above)
+  -6        Enable IPv6 support for TCP and UDP
 
   Logs:
   -d        Show logs in DEBUG mode
@@ -98,6 +99,7 @@ func root(args []string) error {
 		"",
 		"Path to server configuration file in YAML format (overrides other proxy flags)",
 	)
+	flags.BoolVar(&conf.IPv6Enabled, "6", false, "Enable IPv6 support for TCP and UDP")
 	flags.StringVar(&conf.Interface, "i", "", "Bind proxy to specific network interface")
 	flags.BoolFunc("I", "Display list of network interfaces and exit", func(flagValue string) error {
 		if err := network.DisplayInterfaces(false); err != nil {

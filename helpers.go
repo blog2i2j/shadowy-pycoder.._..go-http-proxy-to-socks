@@ -64,36 +64,6 @@ func appendHostToXForwardHeader(header http.Header, host string) {
 	header.Set("X-Forwarded-For", host)
 }
 
-func getFullAddress(v, ip string, all bool) (string, error) {
-	if v == "" {
-		return "", nil
-	}
-	ipAddr := "127.0.0.1"
-	if all {
-		ipAddr = "0.0.0.0"
-	}
-	if port, err := strconv.Atoi(v); err == nil {
-		if ip != "" {
-			return fmt.Sprintf("%s:%d", ip, port), nil
-		} else {
-			return fmt.Sprintf("%s:%d", ipAddr, port), nil
-		}
-	}
-	host, port, err := net.SplitHostPort(v)
-	if err != nil {
-		return "", err
-	}
-	if port == "" {
-		return "", fmt.Errorf("port is missing")
-	}
-	if ip != "" {
-		return fmt.Sprintf("%s:%s", ip, port), nil
-	} else if host == "" {
-		return fmt.Sprintf("%s:%s", ipAddr, port), nil
-	}
-	return fmt.Sprintf("%s:%s", host, port), nil
-}
-
 func expandPath(p string) string {
 	p = os.ExpandEnv(p)
 	if strings.HasPrefix(p, "~") {
@@ -163,9 +133,9 @@ var (
 	_ contextDialer = &net.Dialer{}
 )
 
-func newSOCKS5Dialer(address string, auth *auth, forward contextDialer) (*socks5.Dialer, error) {
+func newSOCKS5Dialer(address string, auth *auth, forward contextDialer, network string) (*socks5.Dialer, error) {
 	d := &socks5.Dialer{
-		ProxyNetwork: "tcp",
+		ProxyNetwork: network,
 		IsResolve:    false,
 	}
 	host, port, err := splitHostPort(address)
