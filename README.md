@@ -595,12 +595,12 @@ To test proxy in IPv6 mode you can use any Linux VM:
 
 ```shell
 # add your host machine as gateway for VM
-export GATEWAY="<host IPv4 address"
+export GATEWAY="<host IPv4 address>"
 ip route add 0.0.0.0/1 via "$GATEWAY"
 ip route add 128.0.0.0/1 via "$GATEWAY"
 
 # add your host machine as gateway IPv6 for VM
-export GATEWAY6="<host IPv6 address"
+export GATEWAY6="<host IPv6 address>"
 ip -6 route add ::/1 via "$GATEWAY6" dev eth0
 ip -6 route add 8000::/1 via "$GATEWAY6" dev eth0
 ```
