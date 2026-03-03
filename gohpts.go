@@ -18,6 +18,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/pprof"
+	"net/netip"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -68,6 +69,7 @@ type Config struct {
 	KeyFile          string
 	Interface        string
 	ServerConfPath   string
+	IPv6Enabled      bool
 	TProxy           string
 	TProxyOnly       string
 	TProxyUDP        string
@@ -144,6 +146,9 @@ type proxyapp struct {
 	httpServerAddr   string
 	pprofAddr        string
 	iface            *net.Interface
+	tcp              string
+	udp              string
+	ipv6enabled      bool
 	tproxyAddr       string
 	tproxyAddrUDP    string
 	tproxyMode       string
@@ -255,16 +260,27 @@ func New(conf *Config) *proxyapp {
 	}
 	p.debug = conf.Debug
 	if conf.AddrPprof != "" {
-		p.pprofAddr, err = getFullAddress(conf.AddrPprof, "", false)
+		var pprofAddr netip.AddrPort
+		pprofAddr, err = network.ParseAddrPort(conf.AddrPprof, "127.0.0.1")
 		if err != nil {
 			p.logger.Fatal().Err(err).Msg("")
 		}
+		p.pprofAddr = pprofAddr.String()
 	}
 	// the only way I found to make debug level independent between loggers
 	l := logger.Level(lvl)
 	sl := snifflogger.Level(lvl)
 	p.logger = &l
 	p.snifflogger = &sl
+	if conf.IPv6Enabled {
+		p.tcp = "tcp"
+		p.udp = "udp"
+		p.ipv6enabled = true
+	} else {
+		p.tcp = "tcp4"
+		p.udp = "udp4"
+		p.ipv6enabled = false
+	}
 	if slices.Contains(SupportedTProxyOS, runtime.GOOS) && conf.TProxy != "" && conf.TProxyOnly != "" {
 		p.logger.Fatal().Msg("Cannot specify TPRoxy and TProxyOnly at the same time")
 	} else if slices.Contains(SupportedTProxyOS, runtime.GOOS) && conf.TProxyMode != "" && !slices.Contains(SupportedTProxyModes, conf.TProxyMode) {
@@ -285,24 +301,25 @@ func New(conf *Config) *proxyapp {
 		tAddr = conf.TProxy
 	}
 	if p.tproxyMode != "" {
-		p.tproxyAddr, err = getFullAddress(tAddr, "", true)
+		var tproxyAddr netip.AddrPort
+		tproxyAddr, err = network.ParseAddrPort(tAddr, "0.0.0.0")
 		if err != nil {
 			p.logger.Fatal().Err(err).Msg("")
 		}
+		p.tproxyAddr = tproxyAddr.String()
 		if conf.TProxyUDP != "" {
 			if p.tproxyMode != "tproxy" {
 				p.logger.Warn().Msgf("[%s] transparent UDP server only supports tproxy mode", conf.TProxyMode)
 			}
-			p.tproxyAddrUDP, err = getFullAddress(conf.TProxyUDP, "", true)
+			var tproxyAddrUDP netip.AddrPort
+			tproxyAddrUDP, err = network.ParseAddrPort(conf.TProxyUDP, "0.0.0.0")
 			if err != nil {
 				p.logger.Fatal().Err(err).Msg("")
 			}
+			p.tproxyAddrUDP = tproxyAddrUDP.String()
 		}
 	} else {
-		p.tproxyAddr, err = getFullAddress(tAddr, "", false)
-		if err != nil {
-			p.logger.Fatal().Err(err).Msg("")
-		}
+		p.tproxyAddr = ""
 	}
 	if network.AddrEqual(p.tproxyAddr, p.tproxyAddrUDP) {
 		p.logger.Fatal().Msgf("%s: address already in use", p.tproxyAddrUDP)
@@ -375,10 +392,20 @@ func New(conf *Config) *proxyapp {
 				p.iface = nil
 				p.logger.Warn().Err(err).Msgf("Failed binding to %s, using default interface", sconf.Server.Interface)
 			}
-			addrHTTP, err = getFullAddress(sconf.Server.Address, iAddr, false)
-			if err != nil {
-				p.logger.Fatal().Err(err).Msg("")
+			var hostPortHTTP netip.AddrPort
+			if iAddr == "" {
+				hostPortHTTP, err = network.ParseAddrPort(conf.AddrHTTP, "127.0.0.1")
+				if err != nil {
+					p.logger.Fatal().Err(err).Msg("")
+				}
+			} else {
+				parsedAddrHTTP, err := network.ParseAddrPort(conf.AddrHTTP, iAddr)
+				if err != nil {
+					p.logger.Fatal().Err(err).Msg("")
+				}
+				hostPortHTTP = netip.AddrPortFrom(netip.MustParseAddr(iAddr), parsedAddrHTTP.Port())
 			}
+			addrHTTP = hostPortHTTP.String()
 			p.httpServerAddr = addrHTTP
 			certFile = expandPath(sconf.Server.CertFile)
 			keyFile = expandPath(sconf.Server.KeyFile)
@@ -393,10 +420,11 @@ func New(conf *Config) *proxyapp {
 		}
 		seen := make(map[string]struct{})
 		for idx, pr := range p.proxylist {
-			addr, err := getFullAddress(pr.Address, "", false)
+			hpAddr, err := network.ParseAddrPort(pr.Address, "127.0.0.1")
 			if err != nil {
 				p.logger.Fatal().Err(err).Msg("")
 			}
+			addr := hpAddr.String()
 			if _, ok := seen[addr]; !ok {
 				seen[addr] = struct{}{}
 				p.proxylist[idx].Address = addr
@@ -430,25 +458,38 @@ func New(conf *Config) *proxyapp {
 				p.logger.Warn().Err(err).Msgf("Failed binding to %s, using default interface", conf.Interface)
 				p.iface = nil
 			}
-			addrHTTP, err = getFullAddress(conf.AddrHTTP, iAddr, false)
-			if err != nil {
-				p.logger.Fatal().Err(err).Msg("")
+			var hostPortHTTP netip.AddrPort
+			if iAddr == "" {
+				hostPortHTTP, err = network.ParseAddrPort(conf.AddrHTTP, "127.0.0.1")
+				if err != nil {
+					p.logger.Fatal().Err(err).Msg("")
+				}
+			} else {
+				parsedAddrHTTP, err := network.ParseAddrPort(conf.AddrHTTP, iAddr)
+				if err != nil {
+					p.logger.Fatal().Err(err).Msg("")
+				}
+				hostPortHTTP = netip.AddrPortFrom(netip.MustParseAddr(iAddr), parsedAddrHTTP.Port())
 			}
+			addrHTTP = hostPortHTTP.String()
 			p.httpServerAddr = addrHTTP
 			certFile = expandPath(conf.CertFile)
 			keyFile = expandPath(conf.KeyFile)
 			p.user = conf.ServerUser
 			p.pass = conf.ServerPass
 		}
-		addrSOCKS, err = getFullAddress(conf.AddrSOCKS, "", false)
+		var hostPortSOCKS netip.AddrPort
+		hostPortSOCKS, err = network.ParseAddrPort(conf.AddrSOCKS, "127.0.0.1")
 		if err != nil {
 			p.logger.Fatal().Err(err).Msg("")
 		}
+
+		addrSOCKS = hostPortSOCKS.String()
 		auth := auth{
 			User:     conf.User,
 			Password: conf.Pass,
 		}
-		dialer, err := newSOCKS5Dialer(addrSOCKS, &auth, getBaseDialer(timeout, p.mark))
+		dialer, err := newSOCKS5Dialer(addrSOCKS, &auth, getBaseDialer(timeout, p.mark), p.tcp)
 		if err != nil {
 			p.logger.Fatal().Err(err).Msg("Unable to create SOCKS5 dialer")
 		}
@@ -946,7 +987,7 @@ func (p *proxyapp) handleTunnel(w http.ResponseWriter, r *http.Request) {
 	if network.IsLocalAddress(r.Host) {
 		ctx, cancel := context.WithTimeout(context.Background(), timeout)
 		defer cancel()
-		dstConn, err = getBaseDialer(timeout, p.mark).DialContext(ctx, "tcp", r.Host)
+		dstConn, err = getBaseDialer(timeout, p.mark).DialContext(ctx, p.tcp, r.Host)
 		if err != nil {
 			p.logger.Error().Err(err).Msgf("Failed connecting to %s", r.Host)
 			http.Error(w, err.Error(), http.StatusServiceUnavailable)
@@ -961,7 +1002,7 @@ func (p *proxyapp) handleTunnel(w http.ResponseWriter, r *http.Request) {
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), timeout)
 		defer cancel()
-		dstConn, err = sockDialer.DialContext(ctx, "tcp", r.Host)
+		dstConn, err = sockDialer.DialContext(ctx, p.tcp, r.Host)
 		if err != nil {
 			p.logger.Error().Err(err).Msgf("Failed connecting to %s", r.Host)
 			http.Error(w, err.Error(), http.StatusServiceUnavailable)
@@ -1056,7 +1097,7 @@ func (p *proxyapp) updateSocksList() {
 			User:     pr.Username,
 			Password: pr.Password,
 		}
-		dialer, err = newSOCKS5Dialer(pr.Address, &auth, getBaseDialer(timeout, p.mark))
+		dialer, err = newSOCKS5Dialer(pr.Address, &auth, getBaseDialer(timeout, p.mark), p.tcp)
 		if err != nil {
 			p.logger.Error().Err(err).Msgf("%s Unable to create SOCKS5 dialer %s", ctl, pr.Address)
 			failed++
@@ -1064,7 +1105,7 @@ func (p *proxyapp) updateSocksList() {
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), hopTimeout)
 		defer cancel()
-		conn, err := dialer.DialContext(ctx, "tcp", pr.Address)
+		conn, err := dialer.DialContext(ctx, p.tcp, pr.Address)
 		if err != nil && !errors.Is(err, io.EOF) { // check for EOF to include localhost SOCKS5 in the chain
 			p.logger.Error().Err(err).Msgf("%s Unable to connect to %s", ctl, pr.Address)
 			failed++
@@ -1090,7 +1131,7 @@ func (p *proxyapp) updateSocksList() {
 			User:     pr.Username,
 			Password: pr.Password,
 		}
-		dialer, err = newSOCKS5Dialer(pr.Address, &auth, currentDialer)
+		dialer, err = newSOCKS5Dialer(pr.Address, &auth, currentDialer, p.tcp)
 		if err != nil {
 			p.logger.Error().Err(err).Msgf("%s Unable to create SOCKS5 dialer %s", ctl, pr.Address)
 			continue
@@ -1098,7 +1139,7 @@ func (p *proxyapp) updateSocksList() {
 		// https://github.com/golang/go/issues/37549#issuecomment-1178745487
 		ctx, cancel := context.WithTimeout(context.Background(), hopTimeout)
 		defer cancel()
-		conn, err := dialer.DialContext(ctx, "tcp", pr.Address)
+		conn, err := dialer.DialContext(ctx, p.tcp, pr.Address)
 		if err != nil {
 			p.logger.Error().Err(err).Msgf("%s Unable to connect to %s", ctl, pr.Address)
 			if conn != nil {
@@ -1188,9 +1229,9 @@ func (p *proxyapp) getSocks() (*socks5.Dialer, *http.Client, error) {
 			Password: pr.Password,
 		}
 		if i > 0 {
-			dialer, err = newSOCKS5Dialer(pr.Address, &auth, dialer)
+			dialer, err = newSOCKS5Dialer(pr.Address, &auth, dialer, p.tcp)
 		} else {
-			dialer, err = newSOCKS5Dialer(pr.Address, &auth, getBaseDialer(timeout, p.mark))
+			dialer, err = newSOCKS5Dialer(pr.Address, &auth, getBaseDialer(timeout, p.mark), p.tcp)
 		}
 		if err != nil {
 			p.logger.Error().Err(err).Msgf("%s Unable to create SOCKS5 dialer %s", ctl, pr.Address)
@@ -1560,7 +1601,7 @@ func (p *proxyapp) applyCommonRedirectRules(opts map[string]string) {
 		setex = "set -ex"
 	}
 	if p.tproxyMode == "tproxy" {
-		cmdClear := exec.Command("bash", "-c", fmt.Sprintf(`
+		cmdClear0 := exec.Command("bash", "-c", fmt.Sprintf(`
         %s
         iptables -t mangle -F DIVERT 2>/dev/null || true
         iptables -t mangle -X DIVERT 2>/dev/null || true
@@ -1568,10 +1609,25 @@ func (p *proxyapp) applyCommonRedirectRules(opts map[string]string) {
         ip rule del fwmark 1 lookup 100 2>/dev/null || true
         ip route flush table 100 2>/dev/null || true
         `, setex))
-		cmdClear.Stdout = os.Stdout
-		cmdClear.Stderr = os.Stderr
-		if err := cmdClear.Run(); err != nil {
+		cmdClear0.Stdout = os.Stdout
+		cmdClear0.Stderr = os.Stderr
+		if err := cmdClear0.Run(); err != nil {
 			p.logger.Fatal().Err(err).Msg("Failed while configuring iptables. Are you root?")
+		}
+		if p.ipv6enabled {
+			cmdClear1 := exec.Command("bash", "-c", fmt.Sprintf(`
+        %s
+        ip6tables -t mangle -F DIVERT 2>/dev/null || true
+        ip6tables -t mangle -X DIVERT 2>/dev/null || true
+
+        ip -6 rule del fwmark 1 lookup 100 2>/dev/null || true
+        ip -6 route flush table 100 2>/dev/null || true
+        `, setex))
+			cmdClear1.Stdout = os.Stdout
+			cmdClear1.Stderr = os.Stderr
+			if err := cmdClear1.Run(); err != nil {
+				p.logger.Fatal().Err(err).Msg("Failed while configuring iptables. Are you root?")
+			}
 		}
 		cmdInit0 := exec.Command("bash", "-c", fmt.Sprintf(`
         %s
@@ -1588,9 +1644,30 @@ func (p *proxyapp) applyCommonRedirectRules(opts map[string]string) {
 		if err := cmdInit0.Run(); err != nil {
 			p.logger.Fatal().Err(err).Msg("Failed while configuring iptables. Are you root?")
 		}
+		if p.ipv6enabled {
+			cmdInit1 := exec.Command("bash", "-c", fmt.Sprintf(`
+        %s
+        ip -6 rule add fwmark 1 lookup 100 2>/dev/null || true
+        ip -6 route add local ::/0 dev lo table 100 2>/dev/null || true
+
+        ip6tables -t mangle -N DIVERT 2>/dev/null || true
+        ip6tables -t mangle -F DIVERT 2>/dev/null || true
+        ip6tables -t mangle -A DIVERT -j MARK --set-mark 1
+        ip6tables -t mangle -A DIVERT -j ACCEPT
+        `, setex))
+			cmdInit1.Stdout = os.Stdout
+			cmdInit1.Stderr = os.Stderr
+			if err := cmdInit1.Run(); err != nil {
+				p.logger.Fatal().Err(err).Msg("Failed while configuring iptables. Are you root?")
+			}
+		}
 	}
 
 	_ = createSysctlOptCmd("net.ipv4.ip_forward", "1", setex, opts, p.debug).Run()
+	if p.ipv6enabled {
+		_ = createSysctlOptCmd("net.ipv6.conf.all.forwarding", "1", setex, opts, p.debug).Run()
+		_ = createSysctlOptCmd("net.ipv6.conf.default.forwarding", "1", setex, opts, p.debug).Run()
+	}
 	_ = createSysctlOptCmd("net.core.rmem_default", "4194304", setex, opts, p.debug).Run()
 	_ = createSysctlOptCmd("net.core.wmem_default", "4194304", setex, opts, p.debug).Run()
 	_ = createSysctlOptCmd("net.core.rmem_max", "4194304", setex, opts, p.debug).Run()
@@ -1598,16 +1675,30 @@ func (p *proxyapp) applyCommonRedirectRules(opts map[string]string) {
 	_ = createSysctlOptCmd("net.core.netdev_budget", "600", setex, opts, p.debug).Run()
 	_ = createSysctlOptCmd("net.core.netdev_budget_usecs", "8000", setex, opts, p.debug).Run()
 	_ = createSysctlOptCmd("net.core.netdev_max_backlog", "250000", setex, opts, p.debug).Run()
-	cmdClearForward := exec.Command("bash", "-c", fmt.Sprintf(`
+	cmdClearForward0 := exec.Command("bash", "-c", fmt.Sprintf(`
 	%s
 	iptables -t filter -F GOHPTS 2>/dev/null || true
 	iptables -t filter -D FORWARD -j GOHPTS  2>/dev/null || true
 	iptables -t filter -X GOHPTS  2>/dev/null || true
 	`, setex))
-	cmdClearForward.Stdout = os.Stdout
-	cmdClearForward.Stderr = os.Stderr
-	if err := cmdClearForward.Run(); err != nil {
+	cmdClearForward0.Stdout = os.Stdout
+	cmdClearForward0.Stderr = os.Stderr
+	if err := cmdClearForward0.Run(); err != nil {
 		p.logger.Fatal().Err(err).Msg("Failed while configuring iptables. Are you root?")
+	}
+
+	if p.ipv6enabled {
+		cmdClearForward1 := exec.Command("bash", "-c", fmt.Sprintf(`
+	%s
+	ip6tables -t filter -F GOHPTS 2>/dev/null || true
+	ip6tables -t filter -D FORWARD -j GOHPTS  2>/dev/null || true
+	ip6tables -t filter -X GOHPTS  2>/dev/null || true
+	`, setex))
+		cmdClearForward1.Stdout = os.Stdout
+		cmdClearForward1.Stderr = os.Stderr
+		if err := cmdClearForward1.Run(); err != nil {
+			p.logger.Fatal().Err(err).Msg("Failed while configuring iptables. Are you root?")
+		}
 	}
 	var iface *net.Interface
 	var err error
@@ -1622,7 +1713,7 @@ func (p *proxyapp) applyCommonRedirectRules(opts map[string]string) {
 			}
 		}
 	}
-	cmdForwardFilter := exec.Command("bash", "-c", fmt.Sprintf(`
+	cmdForwardFilter0 := exec.Command("bash", "-c", fmt.Sprintf(`
 	%s
 	iptables -t filter -N GOHPTS 2>/dev/null
 	iptables -t filter -F GOHPTS
@@ -1630,10 +1721,25 @@ func (p *proxyapp) applyCommonRedirectRules(opts map[string]string) {
 	iptables -t filter -A GOHPTS -i %s -j ACCEPT
 	iptables -t filter -A GOHPTS -o %s -j ACCEPT
 	`, setex, iface.Name, iface.Name))
-	cmdForwardFilter.Stdout = os.Stdout
-	cmdForwardFilter.Stderr = os.Stderr
-	if err := cmdForwardFilter.Run(); err != nil {
+	cmdForwardFilter0.Stdout = os.Stdout
+	cmdForwardFilter0.Stderr = os.Stderr
+	if err := cmdForwardFilter0.Run(); err != nil {
 		p.logger.Fatal().Err(err).Msg("Failed while configuring iptables. Are you root?")
+	}
+	if p.ipv6enabled {
+		cmdForwardFilter1 := exec.Command("bash", "-c", fmt.Sprintf(`
+	%s
+	ip6tables -t filter -N GOHPTS 2>/dev/null
+	ip6tables -t filter -F GOHPTS
+	ip6tables -t filter -A FORWARD -j GOHPTS
+	ip6tables -t filter -A GOHPTS -i %s -j ACCEPT
+	ip6tables -t filter -A GOHPTS -o %s -j ACCEPT
+	`, setex, iface.Name, iface.Name))
+		cmdForwardFilter1.Stdout = os.Stdout
+		cmdForwardFilter1.Stderr = os.Stderr
+		if err := cmdForwardFilter1.Run(); err != nil {
+			p.logger.Fatal().Err(err).Msg("Failed while configuring iptables. Are you root?")
+		}
 	}
 }
 
@@ -1642,16 +1748,29 @@ func (p *proxyapp) clearCommonRedirectRules(opts map[string]string) error {
 	if p.debug {
 		setex = "set -ex"
 	}
-	cmdClear := exec.Command("bash", "-c", fmt.Sprintf(`
+	cmdClear0 := exec.Command("bash", "-c", fmt.Sprintf(`
 	%s
 	iptables -t filter -F GOHPTS 2>/dev/null || true
 	iptables -t filter -D FORWARD -j GOHPTS  2>/dev/null || true
 	iptables -t filter -X GOHPTS  2>/dev/null || true
 	`, setex))
-	cmdClear.Stdout = os.Stdout
-	cmdClear.Stderr = os.Stderr
-	if err := cmdClear.Run(); err != nil {
+	cmdClear0.Stdout = os.Stdout
+	cmdClear0.Stderr = os.Stderr
+	if err := cmdClear0.Run(); err != nil {
 		p.logger.Fatal().Err(err).Msg("Failed while configuring iptables. Are you root?")
+	}
+	if p.ipv6enabled {
+		cmdClear1 := exec.Command("bash", "-c", fmt.Sprintf(`
+	%s
+	ip6tables -t filter -F GOHPTS 2>/dev/null || true
+	ip6tables -t filter -D FORWARD -j GOHPTS  2>/dev/null || true
+	ip6tables -t filter -X GOHPTS  2>/dev/null || true
+	`, setex))
+		cmdClear1.Stdout = os.Stdout
+		cmdClear1.Stderr = os.Stderr
+		if err := cmdClear1.Run(); err != nil {
+			p.logger.Fatal().Err(err).Msg("Failed while configuring iptables. Are you root?")
+		}
 	}
 	cmds := make([]string, 0, len(opts))
 	for _, cmd := range slices.Sorted(maps.Keys(opts)) {
@@ -1668,7 +1787,7 @@ func (p *proxyapp) clearCommonRedirectRules(opts map[string]string) error {
 	}
 	_ = cmdRestoreOpts.Run()
 	if p.tproxyMode == "tproxy" {
-		cmd := exec.Command("bash", "-c", fmt.Sprintf(`
+		cmd0 := exec.Command("bash", "-c", fmt.Sprintf(`
         %s
         iptables -t mangle -F DIVERT 2>/dev/null || true
         iptables -t mangle -X DIVERT 2>/dev/null || true
@@ -1676,13 +1795,31 @@ func (p *proxyapp) clearCommonRedirectRules(opts map[string]string) error {
         ip rule del fwmark 1 lookup 100 2>/dev/null || true
         ip route flush table 100 2>/dev/null || true
         `, setex))
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
+		cmd0.Stdout = os.Stdout
+		cmd0.Stderr = os.Stderr
 		if !p.debug {
-			cmd.Stdout = nil
+			cmd0.Stdout = nil
 		}
-		if err := cmd.Run(); err != nil {
+		if err := cmd0.Run(); err != nil {
 			return err
+		}
+		if p.ipv6enabled {
+			cmd1 := exec.Command("bash", "-c", fmt.Sprintf(`
+        %s
+        ip6tables -t mangle -F DIVERT 2>/dev/null || true
+        ip6tables -t mangle -X DIVERT 2>/dev/null || true
+
+        ip -6 rule del fwmark 1 lookup 100 2>/dev/null || true
+        ip -6 route flush table 100 2>/dev/null || true
+        `, setex))
+			cmd1.Stdout = os.Stdout
+			cmd1.Stderr = os.Stderr
+			if !p.debug {
+				cmd1.Stdout = nil
+			}
+			if err := cmd1.Run(); err != nil {
+				return err
+			}
 		}
 	}
 	return nil

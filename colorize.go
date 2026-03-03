@@ -18,7 +18,7 @@ import (
 
 var (
 	ipPortPattern = regexp.MustCompile(
-		`(?:\[(?:[0-9a-fA-F:.]+)\]|(?:\d{1,3}\.){3}\d{1,3})(?::(6553[0-5]|655[0-2]\d|65[0-4]\d{2}|6[0-4]\d{3}|[1-5]?\d{1,4}))?`,
+		`(?:\[(?:[0-9a-fA-F:.]+(?:%[a-zA-Z0-9_.-]+)?)\]|(?:\d{1,3}\.){3}\d{1,3})(?::(6553[0-5]|655[0-2]\d|65[0-4]\d{2}|6[0-4]\d{3}|[1-5]?\d{1,4}))?`,
 	)
 	domainPattern = regexp.MustCompile(
 		`\b(?:[a-zA-Z0-9-]{1,63}\.)+(?:com|net|org|io|co|uk|ru|de|edu|gov|info|biz|dev|app|ai|tv)(?::(6553[0-5]|655[0-2]\d|65[0-4]\d{2}|6[0-4]\d{3}|[1-5]?\d{1,4}))?\b`,
@@ -167,7 +167,7 @@ func colorizeHTTP(
 		if body && len(*reqBodySaved) > 0 {
 			b := colorizeBody(reqBodySaved, nocolor)
 			if b != "" {
-				sb.WriteString("\n")
+				sb.WriteString("\033[K\n")
 				fmt.Fprintf(&sb, "%s ", colorizeTimestamp(time.Now(), nocolor))
 				sb.WriteString(id)
 				sb.WriteString(colors.RedBgDark(" req_body: ").String())
@@ -177,13 +177,14 @@ func colorizeHTTP(
 		if body && len(*respBodySaved) > 0 {
 			b := colorizeBody(respBodySaved, nocolor)
 			if b != "" {
-				sb.WriteString("\n")
+				sb.WriteString("\033[K\n")
 				fmt.Fprintf(&sb, "%s ", colorizeTimestamp(time.Now(), nocolor))
 				sb.WriteString(id)
 				sb.WriteString(colors.RedBgDark(" resp_body: ").String())
 				sb.WriteString(b)
 			}
 		}
+		sb.WriteString("\033[K")
 	}
 	return sb.String()
 }
@@ -241,7 +242,7 @@ func colorizeTLS(req *layers.TLSClientHello, resp *layers.TLSServerHello, id str
 			sb.WriteString(colors.BlueBg(fmt.Sprintf(" ALPN: %v", req.ALPN)).String())
 		}
 		sb.WriteString(colors.MagentaBg(" →  ").String())
-		sb.WriteString("\n")
+		sb.WriteString("\033[K\n")
 		fmt.Fprintf(&sb, "%s ", colorizeTimestamp(time.Now(), nocolor))
 		sb.WriteString(id)
 		sb.WriteString(colors.LightBlue(fmt.Sprintf(" %s ", resp.TypeDesc)).Bold())
@@ -260,6 +261,7 @@ func colorizeTLS(req *layers.TLSClientHello, resp *layers.TLSServerHello, id str
 		if resp.ExtensionLength > 0 {
 			sb.WriteString(colors.BeigeBg(fmt.Sprintf(" ExtLen: %d", resp.ExtensionLength)).String())
 		}
+		sb.WriteString("\033[K")
 	}
 	return sb.String()
 }
@@ -335,7 +337,7 @@ func colorizeDNS(req, resp *layers.DNSMessage, id string, nocolor bool) string {
 		for _, rec := range req.AdditionalRRs {
 			sb.WriteString(colorizeRData(rec))
 		}
-		sb.WriteString("\n")
+		sb.WriteString("\033[K\n")
 		fmt.Fprintf(&sb, "%s ", colorizeTimestamp(time.Now(), nocolor))
 		sb.WriteString(id)
 		sb.WriteString(colors.Blue(fmt.Sprintf(" DNS %s (%s)", resp.Flags.OPCodeDesc, resp.Flags.QRDesc)).Bold())
@@ -352,6 +354,7 @@ func colorizeDNS(req, resp *layers.DNSMessage, id string, nocolor bool) string {
 		for _, rec := range resp.AdditionalRRs {
 			sb.WriteString(colorizeRData(rec))
 		}
+		sb.WriteString("\033[K")
 	}
 	return sb.String()
 }
@@ -457,12 +460,13 @@ func colorizeConnections(srcRemote, srcLocal, dstRemote, dstLocal net.Addr, id s
 		sb.WriteString(colors.Green(fmt.Sprintf(" Src: %s→ %s", srcRemote, srcLocal)).String())
 		sb.WriteString(colors.Magenta(" →  ").String())
 		sb.WriteString(colors.Blue(fmt.Sprintf("Dst: %s→ %s", dstLocal, dstRemote)).String())
-		sb.WriteString("\n")
+		sb.WriteString("\033[K\n")
 		fmt.Fprintf(&sb, "%s ", colorizeTimestamp(time.Now(), nocolor))
 		sb.WriteString(id)
 		sb.WriteString(colors.Gray(fmt.Sprintf(" %s ", r.Method)).String())
 		sb.WriteString(colors.YellowBg(fmt.Sprintf("%s ", r.Host)).String())
 		sb.WriteString(colors.BlueBg(fmt.Sprintf("%s ", r.Proto)).String())
+		sb.WriteString("\033[K")
 	}
 	return sb.String()
 }
@@ -489,6 +493,7 @@ func colorizeConnectionsTransparent(
 		sb.WriteString(colors.Magenta(" →  ").String())
 		sb.WriteString(colors.Blue(fmt.Sprintf("Dst: %s→ %s ", dstLocal, dstRemote)).String())
 		sb.WriteString(colors.BeigeBg(fmt.Sprintf("Orig Dst: %s", dst)).String())
+		sb.WriteString("\033[K")
 	}
 	return sb.String()
 }
