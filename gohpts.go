@@ -35,6 +35,7 @@ import (
 	"github.com/shadowy-pycoder/arpspoof"
 	"github.com/shadowy-pycoder/mshark/layers"
 	"github.com/shadowy-pycoder/mshark/network"
+	"github.com/shadowy-pycoder/ndpspoof"
 	"github.com/wzshiming/socks5"
 )
 
@@ -77,8 +78,10 @@ type Config struct {
 	TProxyWorkers    uint
 	TProxyUDPWorkers uint
 	Auto             bool
+	Dump             bool
 	Mark             uint
 	ARPSpoof         string
+	NDPSpoof         string
 	IgnoredPorts     string
 	LogFilePath      string
 	Debug            bool
@@ -157,6 +160,9 @@ type proxyapp struct {
 	auto             bool
 	mark             uint
 	arpspoofer       *arpspoof.ARPSpoofer
+	ndpspoofer       *ndpspoof.NDPSpoofer
+	raEnabled        bool
+	hostIPGlobal     netip.Addr
 	ignoredPorts     string
 	user             string
 	pass             string
@@ -169,6 +175,8 @@ type proxyapp struct {
 	body             bool
 	json             bool
 	debug            bool
+	dumpRules        bool
+	dump             strings.Builder
 	closeConn        chan bool
 
 	mu             sync.RWMutex
@@ -340,6 +348,11 @@ func New(conf *Config) *proxyapp {
 	if p.auto && !slices.Contains(SupportedTProxyOS, runtime.GOOS) {
 		p.logger.Fatal().Msg("Auto setup is available only on linux/android systems")
 	}
+	p.dumpRules = conf.Dump
+	if p.dumpRules && !slices.Contains(SupportedTProxyOS, runtime.GOOS) {
+		p.logger.Fatal().Msg("Dump is available only on linux/android systems")
+	}
+	p.dump.WriteString("#!/usr/bin/env bash\n\nset -ex\n")
 	p.mark = conf.Mark
 	if p.mark > 0 && !slices.Contains(SupportedTProxyOS, runtime.GOOS) {
 		p.logger.Fatal().Msg("SO_MARK is available only on linux/android systems")
@@ -558,6 +571,40 @@ func New(conf *Config) *proxyapp {
 			p.logger.Fatal().Err(err).Msg("Failed creating arp spoofer")
 		}
 	}
+	if conf.NDPSpoof != "" {
+		if !p.ipv6enabled {
+			p.logger.Fatal().Msg("NDP spoof requires IPv6 enabled")
+		}
+		if !slices.Contains(SupportedTProxyOS, runtime.GOOS) {
+			p.logger.Fatal().Msg("NDP spoof setup is available only on linux/android systems")
+		}
+		if !p.auto {
+			p.logger.Warn().Msg("NDP spoof setup requires iptables configuration")
+		}
+		nsc, err := ndpspoof.NewNDPSpoofConfig(conf.NDPSpoof, p.logger)
+		if err != nil {
+			p.logger.Fatal().Err(err).Msg("Failed creating ndp spoofer")
+		}
+		nsc.Interface = ""
+		nsc.Gateway = nil
+		if p.iface != nil {
+			nsc.Interface = p.iface.Name
+		}
+		nsc.DNSServers = ""
+		if nsc.RA {
+			hostIP, err := network.GetHostIPv6GlobalUnicastFromRoute()
+			if err == nil {
+				nsc.RDNSS = true
+				nsc.DNSServers = hostIP.String() // use host ip as DNS server
+				p.raEnabled = true
+				p.hostIPGlobal = hostIP
+			}
+		}
+		p.ndpspoofer, err = ndpspoof.NewNDPSpoofer(nsc)
+		if err != nil {
+			p.logger.Fatal().Err(err).Msg("Failed creating ndp spoofer")
+		}
+	}
 	if conf.ServerConfPath != "" {
 		p.logger.Info().Msgf("SOCKS5 Proxy [%s] chain: %s", p.proxychain.Type, addrSOCKS)
 	} else {
@@ -613,6 +660,9 @@ func (p *proxyapp) Run() {
 	if p.arpspoofer != nil {
 		go p.arpspoofer.Start()
 	}
+	if p.ndpspoofer != nil {
+		go p.ndpspoofer.Start()
+	}
 	tproxyEnabled := p.tproxyAddr != ""
 	tproxyServers := make([]*tproxyServer, p.tproxyWorkers)
 	opts := make(map[string]string, 20)
@@ -655,6 +705,12 @@ func (p *proxyapp) Run() {
 				err := p.arpspoofer.Stop()
 				if err != nil {
 					p.logger.Error().Err(err).Msg("Failed stopping arp spoofer")
+				}
+			}
+			if p.ndpspoofer != nil {
+				err := p.ndpspoofer.Stop()
+				if err != nil {
+					p.logger.Error().Err(err).Msg("Failed stopping ndp spoofer")
 				}
 			}
 			close(p.closeConn)
@@ -736,7 +792,6 @@ func (p *proxyapp) Run() {
 				p.logger.Fatal().Err(err).Msg("Unable to start HTTP server")
 			}
 		}
-		p.logger.Info().Msg("Server stopped")
 	} else {
 		go func() {
 			<-quit
@@ -744,6 +799,12 @@ func (p *proxyapp) Run() {
 				err := p.arpspoofer.Stop()
 				if err != nil {
 					p.logger.Error().Err(err).Msg("Failed stopping arp spoofer")
+				}
+			}
+			if p.ndpspoofer != nil {
+				err := p.ndpspoofer.Stop()
+				if err != nil {
+					p.logger.Error().Err(err).Msg("Failed stopping ndp spoofer")
 				}
 			}
 			close(p.closeConn)
@@ -822,6 +883,13 @@ func (p *proxyapp) Run() {
 		}
 	}
 	<-done
+	if p.dumpRules {
+		err := os.WriteFile("rules.sh", []byte(p.dump.String()), 0o755)
+		if err != nil {
+			p.logger.Error().Err(err).Msg("Failed dumping rules")
+		}
+	}
+	p.logger.Info().Msg("Proxy stopped")
 }
 
 func (p *proxyapp) handler() http.HandlerFunc {
@@ -1595,110 +1663,110 @@ func (p *proxyapp) proxyAuth(next http.HandlerFunc) http.HandlerFunc {
 	})
 }
 
+func (p *proxyapp) runRuleCmd(rule string) {
+	var setex string
+	if p.debug {
+		setex = "set -ex"
+	}
+	cmd := exec.Command("bash", "-c", fmt.Sprintf(`
+    %s
+    %s
+    `, setex, rule))
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if !p.debug {
+		cmd.Stdout = nil
+	}
+	if err := cmd.Run(); err != nil {
+		p.logger.Fatal().Err(err).Msgf("[%s] Failed while configuring iptables. Are you root?", p.tproxyMode)
+	}
+	p.dump.WriteString(rule)
+}
+
 func (p *proxyapp) applyCommonRedirectRules(opts map[string]string) {
 	var setex string
 	if p.debug {
 		setex = "set -ex"
 	}
 	if p.tproxyMode == "tproxy" {
-		cmdClear0 := exec.Command("bash", "-c", fmt.Sprintf(`
-        %s
-        iptables -t mangle -F DIVERT 2>/dev/null || true
-        iptables -t mangle -X DIVERT 2>/dev/null || true
+		cmdClear0 := `
+iptables -t mangle -F DIVERT 2>/dev/null || true
+iptables -t mangle -X DIVERT 2>/dev/null || true
 
-        ip rule del fwmark 1 lookup 100 2>/dev/null || true
-        ip route flush table 100 2>/dev/null || true
-        `, setex))
-		cmdClear0.Stdout = os.Stdout
-		cmdClear0.Stderr = os.Stderr
-		if err := cmdClear0.Run(); err != nil {
-			p.logger.Fatal().Err(err).Msg("Failed while configuring iptables. Are you root?")
-		}
+ip rule del fwmark 1 lookup 100 2>/dev/null || true
+ip route flush table 100 2>/dev/null || true
+`
+		p.runRuleCmd(cmdClear0)
 		if p.ipv6enabled {
-			cmdClear1 := exec.Command("bash", "-c", fmt.Sprintf(`
-        %s
-        ip6tables -t mangle -F DIVERT 2>/dev/null || true
-        ip6tables -t mangle -X DIVERT 2>/dev/null || true
+			cmdClear1 := `
+ip6tables -t mangle -F DIVERT 2>/dev/null || true
+ip6tables -t mangle -X DIVERT 2>/dev/null || true
 
-        ip -6 rule del fwmark 1 lookup 100 2>/dev/null || true
-        ip -6 route flush table 100 2>/dev/null || true
-        `, setex))
-			cmdClear1.Stdout = os.Stdout
-			cmdClear1.Stderr = os.Stderr
-			if err := cmdClear1.Run(); err != nil {
-				p.logger.Fatal().Err(err).Msg("Failed while configuring iptables. Are you root?")
-			}
+ip -6 rule del fwmark 1 lookup 100 2>/dev/null || true
+ip -6 route flush table 100 2>/dev/null || true
+`
+			p.runRuleCmd(cmdClear1)
 		}
-		cmdInit0 := exec.Command("bash", "-c", fmt.Sprintf(`
-        %s
-        ip rule add fwmark 1 lookup 100 2>/dev/null || true
-        ip route add local 0.0.0.0/0 dev lo table 100 2>/dev/null || true
+		cmdInit0 := `
+ip rule add fwmark 1 lookup 100 2>/dev/null || true
+ip route add local 0.0.0.0/0 dev lo table 100 2>/dev/null || true
 
-        iptables -t mangle -N DIVERT 2>/dev/null || true
-        iptables -t mangle -F DIVERT 2>/dev/null || true
-        iptables -t mangle -A DIVERT -j MARK --set-mark 1
-        iptables -t mangle -A DIVERT -j ACCEPT
-        `, setex))
-		cmdInit0.Stdout = os.Stdout
-		cmdInit0.Stderr = os.Stderr
-		if err := cmdInit0.Run(); err != nil {
-			p.logger.Fatal().Err(err).Msg("Failed while configuring iptables. Are you root?")
-		}
+iptables -t mangle -N DIVERT 2>/dev/null || true
+iptables -t mangle -F DIVERT 2>/dev/null || true
+iptables -t mangle -A DIVERT -j MARK --set-mark 1
+iptables -t mangle -A DIVERT -j ACCEPT
+`
+		p.runRuleCmd(cmdInit0)
 		if p.ipv6enabled {
-			cmdInit1 := exec.Command("bash", "-c", fmt.Sprintf(`
-        %s
-        ip -6 rule add fwmark 1 lookup 100 2>/dev/null || true
-        ip -6 route add local ::/0 dev lo table 100 2>/dev/null || true
+			cmdInit1 := `
+ip -6 rule add fwmark 1 lookup 100 2>/dev/null || true
+ip -6 route add local ::/0 dev lo table 100 2>/dev/null || true
 
-        ip6tables -t mangle -N DIVERT 2>/dev/null || true
-        ip6tables -t mangle -F DIVERT 2>/dev/null || true
-        ip6tables -t mangle -A DIVERT -j MARK --set-mark 1
-        ip6tables -t mangle -A DIVERT -j ACCEPT
-        `, setex))
-			cmdInit1.Stdout = os.Stdout
-			cmdInit1.Stderr = os.Stderr
-			if err := cmdInit1.Run(); err != nil {
-				p.logger.Fatal().Err(err).Msg("Failed while configuring iptables. Are you root?")
-			}
+ip6tables -t mangle -N DIVERT 2>/dev/null || true
+ip6tables -t mangle -F DIVERT 2>/dev/null || true
+ip6tables -t mangle -A DIVERT -j MARK --set-mark 1
+ip6tables -t mangle -A DIVERT -j ACCEPT
+`
+			p.runRuleCmd(cmdInit1)
 		}
 	}
-
-	_ = createSysctlOptCmd("net.ipv4.ip_forward", "1", setex, opts, p.debug).Run()
-	if p.ipv6enabled {
-		_ = createSysctlOptCmd("net.ipv6.conf.all.forwarding", "1", setex, opts, p.debug).Run()
-		_ = createSysctlOptCmd("net.ipv6.conf.default.forwarding", "1", setex, opts, p.debug).Run()
+	_ = runSysctlOptCmd("net.ipv4.ip_forward", "1", setex, opts, p.debug, &p.dump)
+	if p.arpspoofer != nil {
+		_ = runSysctlOptCmd("net.ipv4.conf.all.send_redirects", "0", setex, opts, p.debug, &p.dump)
+		_ = runSysctlOptCmd(fmt.Sprintf("net.ipv4.conf.%s.send_redirects", p.arpspoofer.Interface().Name), "0", setex, opts, p.debug, &p.dump)
+		_ = runSysctlOptCmd("net.ipv4.conf.all.accept_redirects", "0", setex, opts, p.debug, &p.dump)
+		_ = runSysctlOptCmd("net.ipv4.conf.default.accept_redirects", "0", setex, opts, p.debug, &p.dump)
 	}
-	_ = createSysctlOptCmd("net.core.rmem_default", "4194304", setex, opts, p.debug).Run()
-	_ = createSysctlOptCmd("net.core.wmem_default", "4194304", setex, opts, p.debug).Run()
-	_ = createSysctlOptCmd("net.core.rmem_max", "4194304", setex, opts, p.debug).Run()
-	_ = createSysctlOptCmd("net.core.wmem_max", "4194304", setex, opts, p.debug).Run()
-	_ = createSysctlOptCmd("net.core.netdev_budget", "600", setex, opts, p.debug).Run()
-	_ = createSysctlOptCmd("net.core.netdev_budget_usecs", "8000", setex, opts, p.debug).Run()
-	_ = createSysctlOptCmd("net.core.netdev_max_backlog", "250000", setex, opts, p.debug).Run()
-	cmdClearForward0 := exec.Command("bash", "-c", fmt.Sprintf(`
-	%s
-	iptables -t filter -F GOHPTS 2>/dev/null || true
-	iptables -t filter -D FORWARD -j GOHPTS  2>/dev/null || true
-	iptables -t filter -X GOHPTS  2>/dev/null || true
-	`, setex))
-	cmdClearForward0.Stdout = os.Stdout
-	cmdClearForward0.Stderr = os.Stderr
-	if err := cmdClearForward0.Run(); err != nil {
-		p.logger.Fatal().Err(err).Msg("Failed while configuring iptables. Are you root?")
-	}
-
 	if p.ipv6enabled {
-		cmdClearForward1 := exec.Command("bash", "-c", fmt.Sprintf(`
-	%s
-	ip6tables -t filter -F GOHPTS 2>/dev/null || true
-	ip6tables -t filter -D FORWARD -j GOHPTS  2>/dev/null || true
-	ip6tables -t filter -X GOHPTS  2>/dev/null || true
-	`, setex))
-		cmdClearForward1.Stdout = os.Stdout
-		cmdClearForward1.Stderr = os.Stderr
-		if err := cmdClearForward1.Run(); err != nil {
-			p.logger.Fatal().Err(err).Msg("Failed while configuring iptables. Are you root?")
-		}
+		_ = runSysctlOptCmd("net.ipv6.conf.all.forwarding", "1", setex, opts, p.debug, &p.dump)
+		_ = runSysctlOptCmd("net.ipv6.conf.default.forwarding", "1", setex, opts, p.debug, &p.dump)
+	}
+	if p.ndpspoofer != nil {
+		_ = runSysctlOptCmd("net.ipv6.conf.all.accept_ra", "0", setex, opts, p.debug, &p.dump)
+		_ = runSysctlOptCmd("net.ipv6.conf.all.accept_redirects", "0", setex, opts, p.debug, &p.dump)
+		_ = runSysctlOptCmd("net.ipv6.conf.default.accept_redirects", "0", setex, opts, p.debug, &p.dump)
+	}
+	_ = runSysctlOptCmd("net.core.rmem_default", "4194304", setex, opts, p.debug, &p.dump)
+	_ = runSysctlOptCmd("net.core.wmem_default", "4194304", setex, opts, p.debug, &p.dump)
+	_ = runSysctlOptCmd("net.core.rmem_max", "4194304", setex, opts, p.debug, &p.dump)
+	_ = runSysctlOptCmd("net.core.wmem_max", "4194304", setex, opts, p.debug, &p.dump)
+	_ = runSysctlOptCmd("net.core.netdev_budget", "600", setex, opts, p.debug, &p.dump)
+	_ = runSysctlOptCmd("net.core.netdev_budget_usecs", "8000", setex, opts, p.debug, &p.dump)
+	_ = runSysctlOptCmd("net.core.netdev_max_backlog", "250000", setex, opts, p.debug, &p.dump)
+	_ = runSysctlOptCmd("fs.file-max", "2097152", setex, opts, p.debug, &p.dump)
+	cmdClearForward0 := `
+iptables -t filter -F GOHPTS 2>/dev/null || true
+iptables -t filter -D FORWARD -j GOHPTS  2>/dev/null || true
+iptables -t filter -X GOHPTS  2>/dev/null || true
+`
+	p.runRuleCmd(cmdClearForward0)
+	if p.ipv6enabled {
+		cmdClearForward1 := `
+ip6tables -t filter -F GOHPTS 2>/dev/null || true
+ip6tables -t filter -D FORWARD -j GOHPTS  2>/dev/null || true
+ip6tables -t filter -X GOHPTS  2>/dev/null || true
+`
+		p.runRuleCmd(cmdClearForward1)
 	}
 	var iface *net.Interface
 	var err error
@@ -1713,113 +1781,81 @@ func (p *proxyapp) applyCommonRedirectRules(opts map[string]string) {
 			}
 		}
 	}
-	cmdForwardFilter0 := exec.Command("bash", "-c", fmt.Sprintf(`
-	%s
-	iptables -t filter -N GOHPTS 2>/dev/null
-	iptables -t filter -F GOHPTS
-	iptables -t filter -A FORWARD -j GOHPTS
-	iptables -t filter -A GOHPTS -i %s -j ACCEPT
-	iptables -t filter -A GOHPTS -o %s -j ACCEPT
-	`, setex, iface.Name, iface.Name))
-	cmdForwardFilter0.Stdout = os.Stdout
-	cmdForwardFilter0.Stderr = os.Stderr
-	if err := cmdForwardFilter0.Run(); err != nil {
-		p.logger.Fatal().Err(err).Msg("Failed while configuring iptables. Are you root?")
-	}
+	cmdForwardFilter0 := fmt.Sprintf(`
+iptables -t filter -N GOHPTS 2>/dev/null
+iptables -t filter -F GOHPTS
+iptables -t filter -A FORWARD -j GOHPTS
+iptables -t filter -A GOHPTS -i %s -j ACCEPT
+iptables -t filter -A GOHPTS -o %s -j ACCEPT
+`,
+		iface.Name, iface.Name)
+
+	p.runRuleCmd(cmdForwardFilter0)
 	if p.ipv6enabled {
-		cmdForwardFilter1 := exec.Command("bash", "-c", fmt.Sprintf(`
-	%s
-	ip6tables -t filter -N GOHPTS 2>/dev/null
-	ip6tables -t filter -F GOHPTS
-	ip6tables -t filter -A FORWARD -j GOHPTS
-	ip6tables -t filter -A GOHPTS -i %s -j ACCEPT
-	ip6tables -t filter -A GOHPTS -o %s -j ACCEPT
-	`, setex, iface.Name, iface.Name))
-		cmdForwardFilter1.Stdout = os.Stdout
-		cmdForwardFilter1.Stderr = os.Stderr
-		if err := cmdForwardFilter1.Run(); err != nil {
-			p.logger.Fatal().Err(err).Msg("Failed while configuring iptables. Are you root?")
+		cmdForwardFilter1 := fmt.Sprintf(`
+ip6tables -t filter -N GOHPTS 2>/dev/null
+ip6tables -t filter -F GOHPTS
+ip6tables -t filter -A FORWARD -j GOHPTS
+ip6tables -t filter -A GOHPTS -i %s -j ACCEPT
+ip6tables -t filter -A GOHPTS -o %s -j ACCEPT
+`, iface.Name, iface.Name)
+		p.runRuleCmd(cmdForwardFilter1)
+		if p.raEnabled {
+			cmdForwardFilter2 := `
+ip6tables -t filter -A INPUT -p ipv6-icmp --icmpv6-type redirect -j DROP
+ip6tables -t filter -A OUTPUT -p ipv6-icmp --icmpv6-type redirect -j DROP
+`
+			p.runRuleCmd(cmdForwardFilter2)
 		}
 	}
 }
 
 func (p *proxyapp) clearCommonRedirectRules(opts map[string]string) error {
-	var setex string
-	if p.debug {
-		setex = "set -ex"
-	}
-	cmdClear0 := exec.Command("bash", "-c", fmt.Sprintf(`
-	%s
-	iptables -t filter -F GOHPTS 2>/dev/null || true
-	iptables -t filter -D FORWARD -j GOHPTS  2>/dev/null || true
-	iptables -t filter -X GOHPTS  2>/dev/null || true
-	`, setex))
-	cmdClear0.Stdout = os.Stdout
-	cmdClear0.Stderr = os.Stderr
-	if err := cmdClear0.Run(); err != nil {
-		p.logger.Fatal().Err(err).Msg("Failed while configuring iptables. Are you root?")
-	}
+	cmdClear0 := `
+iptables -t filter -F GOHPTS 2>/dev/null || true
+iptables -t filter -D FORWARD -j GOHPTS  2>/dev/null || true
+iptables -t filter -X GOHPTS  2>/dev/null || true
+`
+	p.runRuleCmd(cmdClear0)
 	if p.ipv6enabled {
-		cmdClear1 := exec.Command("bash", "-c", fmt.Sprintf(`
-	%s
-	ip6tables -t filter -F GOHPTS 2>/dev/null || true
-	ip6tables -t filter -D FORWARD -j GOHPTS  2>/dev/null || true
-	ip6tables -t filter -X GOHPTS  2>/dev/null || true
-	`, setex))
-		cmdClear1.Stdout = os.Stdout
-		cmdClear1.Stderr = os.Stderr
-		if err := cmdClear1.Run(); err != nil {
-			p.logger.Fatal().Err(err).Msg("Failed while configuring iptables. Are you root?")
+		cmdClear1 := `
+ip6tables -t filter -F GOHPTS 2>/dev/null || true
+ip6tables -t filter -D FORWARD -j GOHPTS  2>/dev/null || true
+ip6tables -t filter -X GOHPTS  2>/dev/null || true
+`
+		p.runRuleCmd(cmdClear1)
+		if p.raEnabled {
+			cmdClear2 := `
+ip6tables -t filter -D INPUT -p ipv6-icmp --icmpv6-type redirect -j DROP
+ip6tables -t filter -D OUTPUT -p ipv6-icmp --icmpv6-type redirect -j DROP
+`
+			p.runRuleCmd(cmdClear2)
 		}
 	}
 	cmds := make([]string, 0, len(opts))
 	for _, cmd := range slices.Sorted(maps.Keys(opts)) {
 		cmds = append(cmds, fmt.Sprintf("sysctl -w %s=%q", cmd, opts[cmd]))
 	}
-	cmdRestoreOpts := exec.Command("bash", "-c", fmt.Sprintf(`
-        %s
-		%s
-        `, setex, strings.Join(cmds, "\n")))
-	cmdRestoreOpts.Stdout = os.Stdout
-	cmdRestoreOpts.Stderr = os.Stderr
-	if !p.debug {
-		cmdRestoreOpts.Stdout = nil
-	}
-	_ = cmdRestoreOpts.Run()
+	cmdRestoreOpts := strings.Join(cmds, "\n")
+	p.runRuleCmd(cmdRestoreOpts)
 	if p.tproxyMode == "tproxy" {
-		cmd0 := exec.Command("bash", "-c", fmt.Sprintf(`
-        %s
-        iptables -t mangle -F DIVERT 2>/dev/null || true
-        iptables -t mangle -X DIVERT 2>/dev/null || true
+		cmd0 := `
+iptables -t mangle -F DIVERT 2>/dev/null || true
+iptables -t mangle -X DIVERT 2>/dev/null || true
 
-        ip rule del fwmark 1 lookup 100 2>/dev/null || true
-        ip route flush table 100 2>/dev/null || true
-        `, setex))
-		cmd0.Stdout = os.Stdout
-		cmd0.Stderr = os.Stderr
-		if !p.debug {
-			cmd0.Stdout = nil
-		}
-		if err := cmd0.Run(); err != nil {
-			return err
-		}
+ip rule del fwmark 1 lookup 100 2>/dev/null || true
+ip route flush table 100 2>/dev/null || true
+`
+		p.runRuleCmd(cmd0)
 		if p.ipv6enabled {
-			cmd1 := exec.Command("bash", "-c", fmt.Sprintf(`
-        %s
-        ip6tables -t mangle -F DIVERT 2>/dev/null || true
-        ip6tables -t mangle -X DIVERT 2>/dev/null || true
+			cmd1 := `
+ip6tables -t mangle -F DIVERT 2>/dev/null || true
+ip6tables -t mangle -X DIVERT 2>/dev/null || true
 
-        ip -6 rule del fwmark 1 lookup 100 2>/dev/null || true
-        ip -6 route flush table 100 2>/dev/null || true
-        `, setex))
-			cmd1.Stdout = os.Stdout
-			cmd1.Stderr = os.Stderr
-			if !p.debug {
-				cmd1.Stdout = nil
-			}
-			if err := cmd1.Run(); err != nil {
-				return err
-			}
+ip -6 rule del fwmark 1 lookup 100 2>/dev/null || true
+ip -6 route flush table 100 2>/dev/null || true
+`
+			p.runRuleCmd(cmd1)
 		}
 	}
 	return nil

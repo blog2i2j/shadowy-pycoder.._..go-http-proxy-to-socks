@@ -32,4 +32,5 @@ models/**/*
 *.model
 *.vocab
 *.yaml
+rules.sh
 
