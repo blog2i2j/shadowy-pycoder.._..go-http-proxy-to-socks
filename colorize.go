@@ -18,7 +18,7 @@ import (
 
 var (
 	ipPortPattern = regexp.MustCompile(
-		`(?:\[(?:[0-9a-fA-F:.]+(?:%[a-zA-Z0-9_.-]+)?)\]|(?:\d{1,3}\.){3}\d{1,3})(?::(6553[0-5]|655[0-2]\d|65[0-4]\d{2}|6[0-4]\d{3}|[1-5]?\d{1,4}))?`,
+		`(?:(?:\[(?:[0-9a-fA-F:.]+(?:%[a-zA-Z0-9_.-]+)?)\]|(?:\d{1,3}\.){3}\d{1,3})(?::(6553[0-5]|655[0-2]\d|65[0-4]\d{2}|6[0-4]\d{3}|[1-5]?\d{1,4}))?|(?:[0-9a-fA-F:]+:+[0-9a-fA-F:]+(?:%[a-zA-Z0-9_.-]+)?))`,
 	)
 	domainPattern = regexp.MustCompile(
 		`\b(?:[a-zA-Z0-9-]{1,63}\.)+(?:com|net|org|io|co|uk|ru|de|edu|gov|info|biz|dev|app|ai|tv)(?::(6553[0-5]|655[0-2]\d|65[0-4]\d{2}|6[0-4]\d{3}|[1-5]?\d{1,4}))?\b`,
@@ -30,7 +30,9 @@ var (
 	credsPattern = regexp.MustCompile(
 		`(?i)(?:"|')?(username|user|login|email|password|pass|pwd)(?:"|')?\s*[:=]\s*(?:"|')?([^\s"'&]+)`,
 	)
-	macPattern   = regexp.MustCompile(`(?i)([a-z0-9_]+_[0-9a-f]{2}(?::[0-9a-f]{2}){2}|(?:[0-9a-f]{2}[:-]){5}[0-9a-f]{2})`)
+	macPattern = regexp.MustCompile(
+		`(?i)(?:\b[0-9a-f]{2}:[0-9a-f]{2}:[0-9a-f]{2}:[0-9a-f]{2}:[0-9a-f]{2}:[0-9a-f]{2}\b|\b[0-9a-f]{2}-[0-9a-f]{2}-[0-9a-f]{2}-[0-9a-f]{2}-[0-9a-f]{2}-[0-9a-f]{2}\b|\b[0-9a-f]{2}:[0-9a-f]{2}:[0-9a-f]{2}\b|\b[a-z0-9_]+_[0-9a-f]{2}:[0-9a-f]{2}:[0-9a-f]{2}\b)`,
+	)
 	portsPattern = regexp.MustCompile(
 		`^\s*(?:6553[0-5]|655[0-2]\d|65[0-4]\d{2}|6[0-4]\d{3}|[1-5]\d{0,4}|[1-9]\d{0,3})\s*(?:,\s*(?:6553[0-5]|655[0-2]\d|65[0-4]\d{2}|6[0-4]\d{3}|[1-5]\d{0,4}|[1-9]\d{0,3})\s*)*$`,
 	)
@@ -53,6 +55,10 @@ var rColors = []func(string) *colors.Color{
 	colors.MagentaBg,
 	colors.RedBgDark,
 	colors.YellowBg,
+	colors.NewColor(215),
+	colors.NewColorBgDark(215),
+	colors.NewColor(138),
+	colors.NewColorBgDark(138),
 }
 
 func randColor() func(string) *colors.Color {
@@ -408,6 +414,9 @@ func colorizeLogMessage(line string, nocolor bool) string {
 		return line
 	}
 	result := ipPortPattern.ReplaceAllStringFunc(line, func(match string) string {
+		if macPattern.MatchString(match) {
+			return match
+		}
 		return colors.Gray(match).String()
 	})
 	result = domainPattern.ReplaceAllStringFunc(result, func(match string) string {
@@ -424,6 +433,9 @@ func colorizeErrMessage(line string, nocolor bool) string {
 		return line
 	}
 	result := ipPortPattern.ReplaceAllStringFunc(line, func(match string) string {
+		if macPattern.MatchString(match) {
+			return match
+		}
 		return colors.Red(match).String()
 	})
 	result = domainPattern.ReplaceAllStringFunc(result, func(match string) string {

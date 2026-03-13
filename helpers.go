@@ -157,19 +157,25 @@ func newSOCKS5Dialer(address string, auth *auth, forward contextDialer, network 
 	return d, nil
 }
 
-func createSysctlOptCmd(opt, value, setex string, opts map[string]string, debug bool) *exec.Cmd {
-	cmdCat := exec.Command("bash", "-c", fmt.Sprintf(`
-    cat /proc/sys/%s
-    `, strings.ReplaceAll(opt, ".", "/")))
-	output, _ := cmdCat.CombinedOutput()
-	opts[opt] = strings.ReplaceAll(strings.TrimRight(string(output), "\n"), "\t", " ")
+func runSysctlOptCmd(opt, value, setex string, opts map[string]string, debug bool, dump *strings.Builder) error {
+	data, err := os.ReadFile(fmt.Sprintf("/proc/sys/%s", strings.ReplaceAll(opt, ".", "/")))
+	if err != nil {
+		return err
+	}
+	cmdOpt := fmt.Sprintf(`sysctl -w %s=%q`, opt, value)
 	cmd := exec.Command("bash", "-c", fmt.Sprintf(`
     %s
-    sysctl -w %s=%q`, setex, opt, value))
+    %s`, setex, cmdOpt))
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if !debug {
 		cmd.Stdout = nil
 	}
-	return cmd
+	if err := cmd.Run(); err != nil {
+		return err
+	}
+	opts[opt] = strings.ReplaceAll(strings.TrimRight(string(data), "\n"), "\t", " ")
+	dump.WriteString(cmdOpt)
+	dump.WriteString("\n")
+	return nil
 }
