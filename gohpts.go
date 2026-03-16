@@ -591,6 +591,7 @@ func New(conf *Config) *proxyapp {
 			nsc.Interface = p.iface.Name
 		}
 		nsc.DNSServers = ""
+		nsc.Auto = false
 		if nsc.RA {
 			hostIP, err := network.GetHostIPv6GlobalUnicastFromRoute()
 			if err == nil {
@@ -1028,7 +1029,7 @@ func (p *proxyapp) handleForward(w http.ResponseWriter, r *http.Request) {
 		close(done)
 		return
 	}
-	written := prettifyBytes(n)
+	written := network.PrettifyBytes(n)
 	if chunked {
 		written = fmt.Sprintf("%s - chunked", written)
 	}
@@ -1362,7 +1363,7 @@ func (p *proxyapp) transfer(
 		p.logger.Error().Err(err).Msgf("Error during copy from %s to %s: %v", srcName, destName, err)
 	}
 	if n > 0 {
-		p.logger.Debug().Msgf("copied %s from %s to %s", prettifyBytes(n), srcName, destName)
+		p.logger.Debug().Msgf("copied %s from %s to %s", network.PrettifyBytes(n), srcName, destName)
 	}
 	src.Close()
 }

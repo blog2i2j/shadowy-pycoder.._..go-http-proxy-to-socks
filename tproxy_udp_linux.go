@@ -404,7 +404,7 @@ func (tsu *tproxyServerUDP) handleConnection(conn *udpConn) {
 	defer func() {
 		srcConnStr := fmt.Sprintf("%s→ %s", conn.srcAddr, conn.dstAddr)
 		dstConnStr := fmt.Sprintf("%s→ %s→ %s", tsu.conn.LocalAddr(), conn.LocalAddr(), conn.dstAddr)
-		tsu.p.logger.Debug().Msgf("Copied %s for udp src: %s - dst: %s", prettifyBytes(int64(conn.written.Load())), srcConnStr, dstConnStr)
+		tsu.p.logger.Debug().Msgf("Copied %s for udp src: %s - dst: %s", network.PrettifyBytes(int64(conn.written.Load())), srcConnStr, dstConnStr)
 		tsu.wg.Done()
 	}()
 readLoop:
@@ -622,7 +622,7 @@ func (tsu *tproxyServerUDP) handleDNSConnection(conn *dnsConn, gwConn *net.UDPCo
 	defer func() {
 		srcConnStr := fmt.Sprintf("%s→ %s", conn.srcAddr, gwConn.LocalAddr())
 		dstConnStr := fmt.Sprintf("%s→ %s", conn.LocalAddr(), conn.dstAddr)
-		tsu.p.logger.Debug().Msgf("Copied %s for udp src: %s - dst: %s", prettifyBytes(int64(conn.written.Load())), srcConnStr, dstConnStr)
+		tsu.p.logger.Debug().Msgf("Copied %s for udp src: %s - dst: %s", network.PrettifyBytes(int64(conn.written.Load())), srcConnStr, dstConnStr)
 		conn.close()
 		tsu.wg.Done()
 	}()

@@ -1,3 +1,3 @@
 package gohpts
 
-const Version string = "gohpts v1.12.1"
+const Version string = "gohpts v1.12.2"
