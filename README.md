@@ -107,7 +107,13 @@ Specify http server in proxy configuration of Postman
 
 [[Back]](#table-of-contents)
 
-You can download the binary for your platform from [Releases](https://github.com/shadowy-pycoder/go-http-proxy-to-socks/releases) page.
+1. Arch Linux/CachyOS/EndeavourOS
+
+```shell
+yay -S gohpts
+```
+
+2. You can download the binary for your platform from [Releases](https://github.com/shadowy-pycoder/go-http-proxy-to-socks/releases) page.
 
 Example:
 
@@ -115,7 +121,7 @@ Example:
 GOHPTS_RELEASE=v1.12.3; wget -v https://github.com/shadowy-pycoder/go-http-proxy-to-socks/releases/download/$GOHPTS_RELEASE/gohpts-$GOHPTS_RELEASE-linux-amd64.tar.gz -O gohpts && tar xvzf gohpts && mv -f gohpts-$GOHPTS_RELEASE-linux-amd64 gohpts && ./gohpts -h
 ```
 
-Alternatively, you can install it using `go install` command (requires Go [1.26.1](https://go.dev/doc/install) or later):
+3. Alternatively, you can install it using `go install` command (requires Go [1.26](https://go.dev/doc/install) or later):
 
 ```shell
 CGO_ENABLED=0 go install -ldflags "-s -w" -trimpath github.com/shadowy-pycoder/go-http-proxy-to-socks/cmd/gohpts@latest
@@ -123,7 +129,7 @@ CGO_ENABLED=0 go install -ldflags "-s -w" -trimpath github.com/shadowy-pycoder/g
 
 This will install the `gohpts` binary to your `$GOPATH/bin` directory.
 
-Another alternative is to build from source:
+4. Another alternative is to build from source:
 
 ```shell
 git clone https://github.com/shadowy-pycoder/go-http-proxy-to-socks.git
